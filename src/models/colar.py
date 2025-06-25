@@ -50,9 +50,20 @@ class LitCoLaR(LitCoTModelBase):
             self.limit_rl_train_epoch_length()
         return super().on_train_epoch_start()
 
+    def training_step(self, batch, batch_idx=None, dataloader_idx=0):
+        if self.model_kwargs.do_rl:
+            return self.rl_training_step(batch=batch, batch_idx=batch_idx, dataloader_idx=dataloader_idx)
+        else:
+            return self.sft_training_step(batch=batch, batch_idx=batch_idx, dataloader_idx=dataloader_idx)
     # -- basic methods implemenration ends --#
 
     # ++ sft implementation begins ++#
+    def sft_training_step(self, batch, batch_idx, dataloader_idx=0):
+        log_dict = self.forward(batch=batch)
+        log_dict = {f'train/{k}': v for k, v in log_dict.items()}
+        self.log_dict(log_dict, sync_dist=True, prog_bar=True, batch_size=len(batch['idx']))
+        return log_dict['train/total_loss']
+
     def forward(self, batch):
         latent_cot_config = self.model_kwargs.latent_cot_config
         max_compression_factor = latent_cot_config.max_compression_factor
@@ -88,6 +99,7 @@ class LitCoLaR(LitCoTModelBase):
             steps_inputs_embeds = self.embedding(steps_input_ids)
             steps_labels = steps_input_ids
         else:
+            # better skip this else branch as it is really complex
             steps_pad_lengths = -(steps_attention_mask - 1).sum(dim=-1)
             # make sure there are $k*r - 1$ pad tokens before first token ('###'), so that the first token will be at position $k*r$
             # left pad the steps_input_ids and steps_attention_mask
@@ -151,7 +163,7 @@ class LitCoLaR(LitCoTModelBase):
             )
             compressed_steps_labels = compressed_steps_labels.gather(dim=2, index=rand_steps_indices).squeeze(dim=2)
 
-            # finally
+            # finally we are here:
             steps_inputs_embeds = compressed_steps_inputs_embeds
             steps_attention_mask = compressed_steps_attention_mask
             steps_labels = compressed_steps_labels

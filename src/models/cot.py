@@ -13,7 +13,7 @@ class LitCot(LitCoTModelBase):
     ):
         super().__init__(model_kwargs=model_kwargs, training_kwargs=training_kwargs, all_config=all_config)
 
-    def cot_forward(self, batch):
+    def forward(self, batch):
         # 0: prepare inputs
         question = batch["question"]
         steps = batch["steps"]
@@ -24,7 +24,7 @@ class LitCot(LitCoTModelBase):
         question_input_ids, question_attention_mask = self.prepare_inputs(
             question, padding_side="left", part="question", suffix=self.speed_template.format(1)
         )
-        # steps: [###, steps, ###]
+        # steps: [pad, ###, steps, ###]
         steps_input_ids, steps_attention_mask = self.prepare_inputs(
             steps,
             padding_side="left",

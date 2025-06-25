@@ -106,6 +106,9 @@ class LitCoTModelBase(pl.LightningModule):
         log_dict = self.forward(batch=batch)
         log_dict = {f"{split}/{k}": v for k, v in log_dict.items()}
         return log_dict
+    
+    def forward(self, *args, **kwargs):
+        raise NotImplementedError()
 
     def extra_training_step(self, batch, batch_idx):
         return {}

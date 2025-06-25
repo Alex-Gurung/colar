@@ -17,7 +17,7 @@ class LitCoconut(LitCoTModelBase):
     ):
         super().__init__(model_kwargs=model_kwargs, training_kwargs=training_kwargs, all_config=all_config)
 
-    def coconut_forward(self, batch):
+    def forward(self, batch):
         coconut_config = self.model_kwargs.coconut_config
         current_epoch = self.current_epoch
         current_stage = math.ceil(

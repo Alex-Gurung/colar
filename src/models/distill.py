@@ -20,7 +20,7 @@ class LitCoLaR(LitCoTModelBase):
             feature_size=self.llm.config.hidden_size,
         )
 
-    def distill_forward(self, batch):
+    def forward(self, batch):
         distill_config = self.model_kwargs.distill_config
         n_latents = distill_config.n_latents
 

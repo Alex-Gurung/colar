@@ -13,7 +13,7 @@ class LitICoT(LitCoTModelBase):
     ):
         super().__init__(model_kwargs=model_kwargs, training_kwargs=training_kwargs, all_config=all_config)
 
-    def icot_forward(self, batch):
+    def forward(self, batch):
         icot_config = self.model_kwargs.icot_config
         current_epoch = self.current_epoch
         current_stage = math.ceil(
