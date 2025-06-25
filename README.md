@@ -25,7 +25,7 @@ conda create -n colar python=3.10
 conda activate colar
 pip install -r requirements.txt
 ```
-If that does not work, just instiall the second latest version of pytorch and transformers, and I believe it will work. (We recommend a numpy version < 2.0)
+If that does not work, just instiall the second latest version of pytorch and transformers, and I believe it will work:) (We recommend a numpy version < 2.0)
 
 # Training:
 ```
@@ -42,13 +42,13 @@ batch_size=256 \
 max_compression_factor=5 \
 compression_factor=5 \
 max_new_tokens=16 \
-max_epochs=50"
+max_epochs=50
 ```
 
 # Evaluation:
 ```
 python run.py \
---test_ckpt_path=/path/to/trained/model.ckpt \
+--test_ckpt_path=/path/to/trained/model.ckpt
 ```
 
 # Cite:
@@ -128,7 +128,7 @@ python run.py --model=colar --dataset=qsa --do_test
 python run.py \
 --test_ckpt_path=logs/model_name/dataset_name/log_dir/checkpoints/last.ckpt \
 --model=the_file_name_without_.yaml_under_src/configs/models \# e.g., --model=colar
---dataset=the_file_name_without_.yaml_under_src/configs/datasets \# e.g., --dataset=qsa
+--dataset=the_file_name_without_.yaml_under_src/configs/datasets # e.g., --dataset=qsa
 ```
 
 ## Some tricks for a quick check
