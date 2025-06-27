@@ -11,7 +11,8 @@ import torch
 import lightning.pytorch as pl
 import torch.distributed as dist
 
-from src.utils.utils import instantiate_from_config, get_timestamp, setup_logger, get_metric_statistics
+from src.utils.utils import instantiate_from_config, get_timestamp, get_metric_statistics
+from src.utils.log import setup_logger 
 
 
 logger = setup_logger(__name__)
