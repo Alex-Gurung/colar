@@ -421,7 +421,7 @@ class LitCoTModelBase(pl.LightningModule):
     def extract_answer_from_output(self, output_string: str):
         try:
             return output_string.split(self.answer_template.format(""))[1]
-        except ValueError or IndexError:
+        except (ValueError, IndexError):
             return output_string
 
     def verify_answer(self, gt_answer: str, pred_answer: str) -> float:
