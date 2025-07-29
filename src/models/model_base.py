@@ -20,12 +20,13 @@ class LitCoTModelBase(pl.LightningModule):
         training_kwargs,
         all_config=None,
     ):
+        super().__init__()  # this must be called before save hparams
+
         self.all_config = all_config
         self.training_kwargs = training_kwargs
         self.model_kwargs = model_kwargs
         self.save_hyperparameters()
 
-        super().__init__()
         llm_path = opj(all_config.args.workspace_path, "models", "llms", model_kwargs.model_id)
         ### IMPORTANT: replace the llm path to YOUR OWN llm path ###
 
@@ -38,7 +39,23 @@ class LitCoTModelBase(pl.LightningModule):
             self.tokenizer.add_special_tokens({"pad_token": "[PAD]"})
 
         # prompt templates
-        self.question_template = "Question: {} Let's think step by step:"
+        if model_kwargs.get('chat_template'):
+            self.question_template = \
+"""<|start_header_id|>system<|end_header_id|>
+
+Task:
+Think, and then answer a quesiton, split thinkings and answer with ### token.
+
+Example:
+Question:[A question here] Let's think step by step:###[reasoning here]###Answer:[Your answer here]
+<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Question: {} Let's think step by step:
+<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+"""
+        else:
+            self.question_template = "Question: {} Let's think step by step:"
         self.speed_template = "(Thinking speed: {})"
         self.thinking_separator = "###"
         self.thinking_separator_id = self.tokenizer.convert_tokens_to_ids(self.thinking_separator)
@@ -420,13 +437,15 @@ class LitCoTModelBase(pl.LightningModule):
 
     def extract_answer_from_output(self, output_string: str):
         try:
-            return output_string.split(self.answer_template.format(""))[1]
+            return output_string.strip('#').split(self.answer_template.format(""))[-1]
         except (ValueError, IndexError):
             return output_string
 
     def verify_answer(self, gt_answer: str, pred_answer: str) -> float:
-        gt_answer = gt_answer.strip("\n ").rstrip(".").replace(",", "")
-        pred_answer = pred_answer.strip("\n ").rstrip(".").rstrip(".\n").replace(",", "")
+        def get_pure_string(s: str):
+            return s.strip("#\n ").rstrip(".").replace(",", "").lower()
+        gt_answer = get_pure_string(gt_answer)
+        pred_answer = get_pure_string(pred_answer)
         try:  # some answers may be like '10.0' but predicted as '10'
             gt_answer = float(gt_answer)
             pred_answer = float(pred_answer)

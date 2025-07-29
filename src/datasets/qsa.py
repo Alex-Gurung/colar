@@ -47,7 +47,7 @@ class QSADataModule(pl.LightningDataModule):
     def __init__(self, dataset_name, tiny_dataset=False, epoch_scaling=1, all_config=None):
         super().__init__()
         self.dataset_name = dataset_name
-        self.dataset_dir = Path(all_config.args.workspace_path, "datasets", dataset_name)
+        self.dataset_dir = Path(all_config.args.workspace_path, "datasets", "text_reasoning", dataset_name)
         self.tiny_dataset = tiny_dataset
         self.epoch_scaling = epoch_scaling
         self.all_config = all_config

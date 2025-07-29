@@ -22,9 +22,9 @@ start_time = get_timestamp()
 def do_test(model: pl.LightningModule, trainer: pl.Trainer, ckpt_path: str, data_module: pl.LightningDataModule, args):
     results = defaultdict(list)
     if ckpt_path == "best":
-        state_dict = torch.load(trainer.checkpoint_callback.best_model_path)["state_dict"]
+        state_dict = torch.load(trainer.checkpoint_callback.best_model_path, weights_only=False)["state_dict"]
     elif ckpt_path == "last":
-        state_dict = torch.load(trainer.checkpoint_callback.last_model_path)["state_dict"]
+        state_dict = torch.load(trainer.checkpoint_callback.last_model_path, weights_only=False)["state_dict"]
     else:
         state_dict = torch.load(ckpt_path)["state_dict"]
         logger.info(f"Loading ckpt from {ckpt_path}")
@@ -205,11 +205,7 @@ def get_args():
 
     parser.add_argument("--trainer", type=str, default="default")
 
-    parser.add_argument(
-        "--devices",
-        type=str,
-        default="0",
-    )
+    parser.add_argument("--devices", type=str, default="0")
 
     parser.add_argument("--no_log", help="disable training log", action="store_true")
 
@@ -219,7 +215,7 @@ def get_args():
 
     parser.add_argument("--load_ckpt_path", type=str, help="load ckpt as initialization", default=None)
 
-    parser.add_argument("--workspace_path", type=str, help="assign the path of user workspace directory", default="~")
+    parser.add_argument("--workspace_path", type=str, help="assign the path of user workspace directory", default="/workspace/images-ks3-starfs/workspace/wenhui")
 
     parser.add_argument("--do_test", help="test after training", action="store_true")
 
@@ -245,7 +241,7 @@ def main():
 
     model: pl.LightningModule = instantiate_from_config(config.model, extra_kwargs={"all_config": config})
     if p := args.load_ckpt_path:
-        logger.info(model.load_state_dict(state_dict=torch.load(p, map_location="cpu")["state_dict"], strict=False))
+        logger.info(model.load_state_dict(state_dict=torch.load(p, map_location="cpu", weights_only=False)["state_dict"], strict=False))
 
     trainer: pl.Trainer = instantiate_from_config(
         config.trainer, extra_kwargs={"callbacks": instantiate_callbacks(config.callbacks)}
