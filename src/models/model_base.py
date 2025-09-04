@@ -27,7 +27,8 @@ class LitCoTModelBase(pl.LightningModule):
         self.model_kwargs = model_kwargs
         self.save_hyperparameters()
 
-        llm_path = opj(all_config.args.workspace_path, "models", "llms", model_kwargs.model_id)
+        # llm_path = opj(all_config.args.workspace_path, "models", "llms", model_kwargs.model_id)
+        llm_path = model_kwargs.model_id
         ### IMPORTANT: replace the llm path to YOUR OWN llm path ###
 
         # tokenizer
