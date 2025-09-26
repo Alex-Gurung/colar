@@ -61,7 +61,8 @@ Question: {} Let's think step by step:
         else:
             self.question_template = "Question: {} Let's think step by step:"
         self.speed_template = "(Thinking speed: {})"
-        self.thinking_separator = "###"
+        # self.thinking_separator = "###"
+        self.thinking_separator = " "
         self.thinking_separator_id = self.tokenizer.convert_tokens_to_ids(self.thinking_separator)
         self.steps_template = "{}"
         self.answer_template = "Answer:{}"
@@ -188,10 +189,10 @@ Question: {} Let's think step by step:
                 loss_dict = {}
 
         # Evaluate the generation of the model on the validation data
-        generation_dict = self.eval_generation(batch=batch, split="val", batch_idx=batch_idx, dataloader_idx=dataloader_idx)
+        # generation_dict = self.eval_generation(batch=batch, split="val", batch_idx=batch_idx, dataloader_idx=dataloader_idx)
 
         # Combine loss and generation metrics
-        log_dict = {**loss_dict, **generation_dict}
+        # log_dict = {**loss_dict, **generation_dict}
         log_dict = loss_dict
 
         self.log_dict(
@@ -249,9 +250,15 @@ Question: {} Let's think step by step:
         if isinstance(suffix, str):
             suffix = [suffix] * batch_size
 
-        base_template = getattr(self, f"{part}_template")
-        text_list = [prefix[i] + base_template.format(text) + suffix[i] for i, text in enumerate(text_list)]
-
+        # base_template = getattr(self, f"{part}_template")
+        # text_list = [prefix[i] + base_template.format(text) + suffix[i] for i, text in enumerate(text_list)]
+        text_list = [prefix[i] + text + suffix[i] for i, text in enumerate(text_list)]
+        # print(f"text_list:")
+        # for text in text_list:
+        #     print(text)
+        #     print("--------------------"*10)
+        #     print("--------------------"*10)
+        # x = 1/0
         inputs = self.tokenizer.batch_encode_plus(
             text_list, return_tensors="pt", add_special_tokens=False, padding="longest", padding_side=padding_side
         )
@@ -312,6 +319,12 @@ Question: {} Let's think step by step:
         speed = latent_generation_config["compression_factor"]
         suffix = self.speed_template.format(speed) + self.thinking_separator
 
+        # print(f"🎬 QUESTION PROCESSING DEBUG:")
+        # print(f"   Speed suffix: '{suffix}'")
+        # first_question = questions[0]
+        # print(f"   First question: '{first_question}'")
+        # x = 1/0
+
         question_input_ids, question_attention_mask = self.prepare_inputs(
             questions,
             padding_side="left",
@@ -322,11 +335,11 @@ Question: {} Let's think step by step:
         question_embeds = self.embedding(question_input_ids)
 
         # DEBUG: Check question processing
-        print(f"🎬 QUESTION PROCESSING DEBUG:")
-        print(f"   Speed suffix: '{suffix}'")
-        print(f"   Question input_ids shape: {question_input_ids.shape}")
-        print(f"   Question decoded (sample 0): '{self.tokenizer.decode(question_input_ids[0], skip_special_tokens=False)[:200]}...'")
-        print(f"   Question embedding norms: {question_embeds.norm(dim=-1)[0][:10].tolist()}")
+        # print(f"🎬 QUESTION PROCESSING DEBUG:")
+        # print(f"   Speed suffix: '{suffix}'")
+        # print(f"   Question input_ids shape: {question_input_ids.shape}")
+        # print(f"   Question decoded (sample 0): '{self.tokenizer.decode(question_input_ids[0], skip_special_tokens=False)[:200]}...'")
+        # print(f"   Question embedding norms: {question_embeds.norm(dim=-1)[0][:10].tolist()}")
 
         outputs = self.llm.forward(
             inputs_embeds=question_embeds,
@@ -336,11 +349,11 @@ Question: {} Let's think step by step:
         )
 
         # DEBUG: Check initial LLM output
-        print(f"   Initial LLM logits shape: {outputs.logits.shape}")
+        # print(f"   Initial LLM logits shape: {outputs.logits.shape}")
         initial_probs = torch.softmax(outputs.logits[0, -1], dim=-1)
         top_initial = torch.topk(initial_probs, 5)
         initial_tokens = [self.tokenizer.decode([tid]) for tid in top_initial.indices]
-        print(f"   Initial top tokens: {list(zip(initial_tokens, top_initial.values.tolist()))}")
+        # print(f"   Initial top tokens: {list(zip(initial_tokens, top_initial.values.tolist()))}")
 
         all_inputs_embeds.append(question_embeds)
 
@@ -368,10 +381,10 @@ Question: {} Let's think step by step:
             # norm of the question embeddings to prevent norm discontinuity
             if _ == 0:  # Calculate target norm only once
                 target_embedding_norm = question_embeds.norm(dim=-1).mean().item()
-                print(f"🔧 EMBEDDING NORM FIX:")
-                print(f"   Old scaling (embeds_std): {self.embeds_std}")
-                print(f"   New scaling (question norm): {target_embedding_norm:.4f}")
-                print(f"   Ratio change: {target_embedding_norm / self.embeds_std:.2f}x")
+            #     print(f"🔧 EMBEDDING NORM FIX:")
+            #     print(f"   Old scaling (embeds_std): {self.embeds_std}")
+            #     print(f"   New scaling (question norm): {target_embedding_norm:.4f}")
+            #     print(f"   Ratio change: {target_embedding_norm / self.embeds_std:.2f}x")
 
             current_inputs_embeds = distributions.rsample() * target_embedding_norm
             return_latent_inputs_embeds.append(current_inputs_embeds)
@@ -398,37 +411,37 @@ Question: {} Let's think step by step:
                 output_hidden_states=True,
             )
             past_key_values = outputs.past_key_values
-            print(f"past_key_values: {past_key_values}")
+            # print(f"past_key_values: {past_key_values}")
 
             last_logits = outputs.logits[:, -1]
             probs = torch.softmax(last_logits / latent_generation_config.get("eol_temperature", 1.0), dim=-1)
             batch_next_token = torch.multinomial(probs, num_samples=1)  # [n, 1]
 
             # DEBUG: Show what tokens are being predicted
-            print(f"🎯 LATENT STEP {_} DEBUG:")
+            # print(f"🎯 LATENT STEP {_} DEBUG:")
             predicted_tokens = self.tokenizer.batch_decode(batch_next_token, skip_special_tokens=False)
-            print(f"   Predicted next tokens: {predicted_tokens}")
-            print(f"   thinking_separator_id: {self.thinking_separator_id} ('{self.thinking_separator}')")
+            # print(f"   Predicted next tokens: {predicted_tokens}")
+            # print(f"   thinking_separator_id: {self.thinking_separator_id} ('{self.thinking_separator}')")
 
             # Show top 10 most likely tokens for first sample
             top_k = torch.topk(probs[0], 10)
             top_token_ids = top_k.indices.tolist()
             top_token_probs = top_k.values.tolist()
             top_token_strs = [self.tokenizer.decode([tid]) for tid in top_token_ids]
-            print(f"   Top 10 tokens for sample 0:")
-            for i, (token_str, prob, tid) in enumerate(zip(top_token_strs, top_token_probs, top_token_ids)):
-                marker = " ← SELECTED" if tid == batch_next_token[0].item() else ""
-                print(f"     {i+1:2d}. '{token_str}' (id={tid}) prob={prob:.4f}{marker}")
+            # print(f"   Top 10 tokens for sample 0:")
+            # for i, (token_str, prob, tid) in enumerate(zip(top_token_strs, top_token_probs, top_token_ids)):
+                # marker = " ← SELECTED" if tid == batch_next_token[0].item() else ""
+                # print(f"     {i+1:2d}. '{token_str}' (id={tid}) prob={prob:.4f}{marker}")
 
             is_eol = batch_next_token == self.thinking_separator_id
             is_done = is_done | is_eol
-            print(f"   is_eol: {is_eol.tolist()}")
-            print(f"   is_done: {is_done.tolist()}")
+            # print(f"   is_eol: {is_eol.tolist()}")
+            # print(f"   is_done: {is_done.tolist()}")
 
             if is_done.all():
                 break
-            if _ > 10:
-                break
+            # if _ > 10:
+            #     break
 
         # all_latent_hidden_states = torch.cat(all_latent_hidden_states, dim=2)
 
@@ -450,39 +463,39 @@ Question: {} Let's think step by step:
         all_inputs_embeds = torch.cat(all_inputs_embeds, dim=1)
 
         # DEBUG: Show what's being fed to final generation
-        print(f"🚀 FINAL GENERATION DEBUG:")
-        print(f"   Input embeddings shape: {all_inputs_embeds.shape}")
-        print(f"   Input attention_mask shape: {all_attention_mask.shape}")
-        print(f"   Input sequence length: {all_inputs_embeds.shape[1]}")
-        print(f"   answer_generation_config: {answer_generation_config}")
+        # print(f"🚀 FINAL GENERATION DEBUG:")
+        # print(f"   Input embeddings shape: {all_inputs_embeds.shape}")
+        # print(f"   Input attention_mask shape: {all_attention_mask.shape}")
+        # print(f"   Input sequence length: {all_inputs_embeds.shape[1]}")
+        # print(f"   answer_generation_config: {answer_generation_config}")
 
         # DEEP DEBUG: Check the structure of input embeddings
-        print(f"🔍 DEEP EMBEDDING ANALYSIS:")
-        print(f"   Question length: {question_input_ids.shape[1]}")
-        print(f"   Latent embeddings count: {len(return_latent_inputs_embeds)}")
-        print(f"   End-of-thinking: 1 token")
+        # print(f"🔍 DEEP EMBEDDING ANALYSIS:")
+        # print(f"   Question length: {question_input_ids.shape[1]}")
+        # print(f"   Latent embeddings count: {len(return_latent_inputs_embeds)}")
+        # print(f"   End-of-thinking: 1 token")
 
         # Check embedding norms at different positions
         emb_norms = all_inputs_embeds.norm(dim=-1)[0]  # First sample
-        print(f"   Embedding norms (first 10): {emb_norms[:10].tolist()}")
-        print(f"   Embedding norms (last 10): {emb_norms[-10:].tolist()}")
-        print(f"   Question embeddings norm mean: {emb_norms[:question_input_ids.shape[1]].mean().item():.4f}")
+        # print(f"   Embedding norms (first 10): {emb_norms[:10].tolist()}")
+        # print(f"   Embedding norms (last 10): {emb_norms[-10:].tolist()}")
+        # print(f"   Question embeddings norm mean: {emb_norms[:question_input_ids.shape[1]].mean().item():.4f}")
         if len(return_latent_inputs_embeds) > 0:
             latent_start = question_input_ids.shape[1]
             latent_end = latent_start + len(return_latent_inputs_embeds)
-            print(f"   Latent embeddings norm mean: {emb_norms[latent_start:latent_end].mean().item():.4f}")
+            # print(f"   Latent embeddings norm mean: {emb_norms[latent_start:latent_end].mean().item():.4f}")
 
         # Check attention mask pattern
         attn_first = all_attention_mask[0]
-        print(f"   Attention mask sum: {attn_first.sum().item()}/{attn_first.shape[0]}")
-        print(f"   First 20 attention: {attn_first[:20].tolist()}")
-        print(f"   Last 20 attention: {attn_first[-20:].tolist()}")
+        # print(f"   Attention mask sum: {attn_first.sum().item()}/{attn_first.shape[0]}")
+        # print(f"   First 20 attention: {attn_first[:20].tolist()}")
+        # print(f"   Last 20 attention: {attn_first[-20:].tolist()}")
 
         # Check for any NaN or inf values
-        if torch.isnan(all_inputs_embeds).any():
-            print("   ❌ WARNING: NaN values in input embeddings!")
-        if torch.isinf(all_inputs_embeds).any():
-            print("   ❌ WARNING: Inf values in input embeddings!")
+        # if torch.isnan(all_inputs_embeds).any():
+        #     print("   ❌ WARNING: NaN values in input embeddings!")
+        # if torch.isinf(all_inputs_embeds).any():
+        #     print("   ❌ WARNING: Inf values in input embeddings!")
 
         # IMPORTANT: Need to verify generate() behavior with inputs_embeds
         # Testing hypothesis: generate() with inputs_embeds returns ONLY new tokens
@@ -491,13 +504,14 @@ Question: {} Let's think step by step:
             inputs_embeds=all_inputs_embeds, attention_mask=all_attention_mask, **answer_generation_config
         )
 
-        print(f"   OUTPUT pred_ids shape: {pred_ids.shape}")
+        # print(f"   OUTPUT pred_ids shape: {pred_ids.shape}")
         input_length = all_inputs_embeds.shape[1]
         output_length = pred_ids.shape[1]
 
         if pred_ids.shape[1] > 0:
             decoded_full = self.tokenizer.batch_decode(pred_ids, skip_special_tokens=False)
-            print(f"   Full output (sample 0): '{decoded_full[0][:200]}{'...' if len(decoded_full[0]) > 200 else ''}'")
+            # print(f"   Full output (sample 0): '{decoded_full[0][:200]}{'...' if len(decoded_full[0]) > 200 else ''}'")
+            print(f"   Full output (sample 0): {decoded_full[0]}")
 
             # Key test: Does output length > input length?
             if output_length > input_length:
