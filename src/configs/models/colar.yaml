@@ -90,10 +90,10 @@ trainer:
   # max_epochs: 5
   # max_epochs: 2
   max_epochs: 1
-  # accumulate_grad_batches: 16 # with 8 gpus
+  accumulate_grad_batches: 16 # with 8 gpus
   # accumulate_grad_batches: 32 # 32 acc * 4 gpu * 1 batch size = 128
   # accumulate_grad_batches: 8
-  accumulate_grad_batches: 1 # needed for RL
+  # accumulate_grad_batches: 1 # needed for RL
   # strategy: deepspeed_stage_2_offload
   # strategy: deepspeed_stage_2
   strategy: ddp
