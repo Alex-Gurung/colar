@@ -61,7 +61,8 @@ Question: {} Let's think step by step:
         else:
             self.question_template = "Question: {} Let's think step by step:"
         self.speed_template = "(Thinking speed: {})"
-        self.thinking_separator = "###"
+        # self.thinking_separator = "###"
+        self.thinking_separator = " "
         self.thinking_separator_id = self.tokenizer.convert_tokens_to_ids(self.thinking_separator)
         self.steps_template = "{}"
         self.answer_template = "Answer:{}"
@@ -509,7 +510,8 @@ Question: {} Let's think step by step:
 
         if pred_ids.shape[1] > 0:
             decoded_full = self.tokenizer.batch_decode(pred_ids, skip_special_tokens=False)
-            print(f"   Full output (sample 0): '{decoded_full[0][:200]}{'...' if len(decoded_full[0]) > 200 else ''}'")
+            # print(f"   Full output (sample 0): '{decoded_full[0][:200]}{'...' if len(decoded_full[0]) > 200 else ''}'")
+            print(f"   Full output (sample 0): {decoded_full[0]}")
 
             # Key test: Does output length > input length?
             if output_length > input_length:
