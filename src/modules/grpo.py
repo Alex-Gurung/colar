@@ -27,6 +27,10 @@ class Experience:
     accuracies: Optional[torch.Tensor] = None
     advantages: Optional[torch.Tensor] = None
 
+    # UNIFIED-REFERENCE: Add reference logprobs for KL divergence computation
+    ref_latent_logprobs: Optional[torch.Tensor] = None
+    ref_answer_logprobs: Optional[torch.Tensor] = None
+
     def to(self, device: torch.device):
         members = {}
         for field in fields(self):

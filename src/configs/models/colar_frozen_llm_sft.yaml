@@ -1,0 +1,114 @@
+# FROZEN-LLM-SFT: Configuration for CoLaR SFT with frozen base LLM
+seed: ~
+
+model:
+  target: src.models.colar.LitCoLaR
+  model_kwargs:
+    model_id: Qwen/Qwen2.5-1.5B-Instruct
+    # model_id: DeepSeek-R1-Distill-Qwen-1.5B
+    sft_method: colar
+    chat_template: False
+
+    # FROZEN-LLM-SFT: Enable frozen base LLM mode
+    freeze_base_llm: True
+
+    # FROZEN-LLM-SFT: Disable LoRA since base LLM is frozen
+    do_lora: False
+
+    latent_cot_config:
+      ce_weight: 1
+      embed_modeling_weight: 1
+      embed_modeling_loss: mse  # {nll, mse}
+      entropy_weight: 0
+      pred_embed_forward_weight: 0
+      max_compression_factor: 5
+      pred_compressed_cot: True
+      sqrt_mean: True
+
+    # FROZEN-LLM-SFT: LatentPolicy is the main trainable component
+    latent_policy_config:
+      lp_determinisitc: False
+      lp_intermediate_size: 2048  # Main trainable parameters
+
+    latent_generation_config:
+      max_n_latent_forward: 64
+      latent_temperature: 1.0
+      compression_factor: 5
+
+    answer_generation_config:
+      max_new_tokens: 16
+      do_sample: True
+      top_p: 0.9
+      temperature: 1.0
+
+    # FROZEN-LLM-SFT: SFT mode (no RL)
+    do_rl: False
+
+  training_kwargs:
+    optimizer:
+      target: torch.optim.AdamW
+      lr: 1e-3  # Higher LR since only training small LatentPolicy
+      weight_decay: 0.01
+    use_scheduler: True
+    scheduler:
+      target: constant_schedule_with_warmup
+      warmup_steps: 100  # Shorter warmup for small parameter set
+
+trainer:
+  max_epochs: 10  # More epochs since fewer parameters to train
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 32
+  precision: bf16
+  strategy:
+    class_path: lightning.pytorch.strategies.FSDPStrategy
+    init_args:
+      state_dict_type: sharded_state_dict
+      activation_checkpointing_impl: NO_REENTRANT
+      activation_checkpointing_policy:
+        - transformers.models.qwen2.modeling_qwen2.Qwen2DecoderLayer
+      auto_wrap_policy: transformer_auto_wrap_policy
+      transformer_layer_cls:
+        - transformers.models.qwen2.modeling_qwen2.Qwen2DecoderLayer
+
+dataloader:
+  batch_size: 8  # Can use larger batch size since base LLM is frozen
+  val_batch_size: 8
+  num_workers: 8
+  pin_memory: True
+  persistent_workers: True
+  drop_last: True
+
+# FROZEN-LLM-SFT: Example alternative configurations
+alternatives:
+  # Minimal training - only LatentPolicy with smaller network
+  minimal_training:
+    model:
+      model_kwargs:
+        freeze_base_llm: True
+        latent_policy_config:
+          lp_intermediate_size: 1024  # Smaller network
+
+  # Fast prototyping - very small network
+  fast_prototype:
+    model:
+      model_kwargs:
+        freeze_base_llm: True
+        latent_policy_config:
+          lp_intermediate_size: 512  # Very small network
+    training_kwargs:
+      optimizer:
+        lr: 5e-3  # Higher LR for faster convergence
+    trainer:
+      max_epochs: 5
+    dataloader:
+      batch_size: 32
+
+  # Standard SFT (not frozen) - for comparison
+  standard_sft:
+    model:
+      model_kwargs:
+        freeze_base_llm: False  # Train everything
+        do_lora: True           # Use LoRA for efficiency
+    training_kwargs:
+      optimizer:
+        lr: 1e-4  # Lower LR for full model training

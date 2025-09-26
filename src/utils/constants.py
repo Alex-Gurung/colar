@@ -5,4 +5,5 @@ MODEL_EMB_STD = {
     "Llama-3.1-8B-Instruct": 0.008,
     "gpt2": 0.12,
     "Qwen/Qwen2.5-1.5B-Instruct": 0.0261,
+    "Qwen/Qwen2.5-7B-Instruct": 0.0136,
 }

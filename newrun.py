@@ -19,36 +19,16 @@ logger = setup_logger(__name__)
 start_time = get_timestamp()
 
 
-# def do_test(model: pl.LightningModule, trainer: pl.Trainer, ckpt_path: str, data_module: pl.LightningDataModule, args):
-#     results = defaultdict(list)
-#     if ckpt_path == "best":
-#         state_dict = torch.load(trainer.checkpoint_callback.best_model_path, weights_only=False)["state_dict"]
-#     elif ckpt_path == "last":
-#         state_dict = torch.load(trainer.checkpoint_callback.last_model_path, weights_only=False)["state_dict"]
-#     else:
-#         state_dict = torch.load(ckpt_path)["state_dict"]
-#         logger.info(f"Loading ckpt from {ckpt_path}")
-#     logger.info(model.load_state_dict(state_dict=state_dict, strict=False))
 def do_test(model: pl.LightningModule, trainer: pl.Trainer, ckpt_path: str, data_module: pl.LightningDataModule, args):
     results = defaultdict(list)
-
-    # Load weights first (supports DS/PL dir, HF shards dir, or Lightning .ckpt)
-    # if ckpt_path in ("best", "last"):
-    #     # Keep original behavior for trainer-managed checkpoints
-    #     path = trainer.checkpoint_callback.best_model_path if ckpt_path == "best" else trainer.checkpoint_callback.last_model_path
-    #     state_dict = torch.load(path, map_location="cpu", weights_only=False)["state_dict"]
-    #     logger.info(f"Loading ckpt from {path}")
-    #     logger.info(model.load_state_dict(state_dict=state_dict, strict=False))
-    # else:
-    #     # New smart path
-    #     msg, miss, unexp = load_colar_ckpt_smart(model, ckpt_path, cast_bf16=True)
-    #     logger.info(msg)
-    #     if miss:
-    #         logger.info(f"Missing (sample): {miss}")
-    #     if unexp:
-    #         logger.info(f"Unexpected (sample): {unexp}")
-    logger.info(load_weights_memory_safe(model, ckpt_path, cast_bf16=True))
-
+    if ckpt_path == "best":
+        state_dict = torch.load(trainer.checkpoint_callback.best_model_path, weights_only=False)["state_dict"]
+    elif ckpt_path == "last":
+        state_dict = torch.load(trainer.checkpoint_callback.last_model_path, weights_only=False)["state_dict"]
+    else:
+        state_dict = torch.load(ckpt_path)["state_dict"]
+        logger.info(f"Loading ckpt from {ckpt_path}")
+    logger.info(model.load_state_dict(state_dict=state_dict, strict=False))
     for i in range(args.test_times):
         pl.seed_everything(args.seed + i)
         res = trainer.test(model=model, datamodule=data_module)[0]
@@ -111,7 +91,7 @@ def _preprocess_config(config, args, unknown_args):
     is_test = False
     if p := args.test_ckpt_path:
         # load test model config
-        # config = OmegaConf.load(Path(p).parent.parent / "hparams.yaml").all_config
+        config = OmegaConf.load(Path(p).parent.parent / "hparams.yaml").all_config
         is_test = True
     elif p := args.load_ckpt_path:
         # load pretrained ckpt config
@@ -217,127 +197,229 @@ def get_processed_args_and_config():
 
     return args, config
 
-# --- helpers (top of file is fine) ---
+import os, json, glob
+import torch
+
+def _load_ckpt_into_model_minimal(model, ckpt_path: str):
+    """
+    Accepts either:
+      - a Lightning .ckpt FILE (with ['state_dict']), or
+      - a DIR containing HF shard files: pytorch_model-00001-of-XXXX.bin + pytorch_model.bin.index.json
+    Loads into the inner HF model at `model.model`.
+    """
+    if os.path.isdir(ckpt_path):
+        # HF shard dir path
+        idx = os.path.join(ckpt_path, "pytorch_model.bin.index.json")
+        if not os.path.exists(idx):
+            # also allow the case where shards live one level down (e.g., .../last.ckpt/colar_5_epoch)
+            # and user passed .../last.ckpt; try to find the child with an index
+            cand = glob.glob(os.path.join(ckpt_path, "**", "pytorch_model.bin.index.json"), recursive=True)
+            if cand:
+                idx = cand[0]
+                ckpt_path = os.path.dirname(idx)
+        if not os.path.exists(idx):
+            raise FileNotFoundError(
+                f"Checkpoint dir has no HF shard index file: {ckpt_path}\n"
+                f"Expected: {ckpt_path}/pytorch_model.bin.index.json"
+            )
+
+        # Merge shards per index (no need for transformers/config.json)
+        with open(idx, "r") as f:
+            index = json.load(f)
+        weight_map = index.get("weight_map", {})
+        shard_files = sorted(set(weight_map.values()))
+        merged = {}
+        for shard in shard_files:
+            shard_path = os.path.join(ckpt_path, shard)
+            if not os.path.exists(shard_path):
+                raise FileNotFoundError(f"Missing shard file listed in index: {shard_path}")
+            sd = torch.load(shard_path, map_location="cpu")
+            merged.update(sd)
+
+        # Load into the wrapped HF model inside the Lightning module
+        # (change 'model.model' here if your attribute is named differently)
+        missing, unexpected = model.model.load_state_dict(merged, strict=False)
+        return f"Loaded HF shards from {ckpt_path} (missing={len(missing)}, unexpected={len(unexpected)})"
+
+    # File path -> expect Lightning .ckpt with ['state_dict']
+    sd = torch.load(ckpt_path, map_location="cpu")
+    if "state_dict" not in sd:
+        raise KeyError(f"File does not look like a Lightning .ckpt (missing 'state_dict'): {ckpt_path}")
+    missing, unexpected = model.load_state_dict(sd["state_dict"], strict=False)
+    return f"Loaded Lightning ckpt: {ckpt_path} (missing={len(missing)}, unexpected={len(unexpected)})"
+
+def _find_ds_ckpt_root(path: str) -> str:
+    """
+    Walk upward from `path` until we find a directory that looks like a DeepSpeed ZeRO
+    checkpoint root (contains a 'latest' file or 'checkpoint' subdir).
+    Returns that directory, or raises if not found.
+    """
+    path = os.path.abspath(path)
+    cur = path
+    while True:
+        latest = os.path.join(cur, "latest")
+        ckpt_subdir = os.path.join(cur, "checkpoint")
+        if os.path.isfile(latest) or os.path.isdir(ckpt_subdir):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    raise FileNotFoundError(
+        f"Could not locate a DeepSpeed ZeRO checkpoint root starting from: {path}\n"
+        f"Hint: pass the directory like .../logs/.../checkpoints/last.ckpt"
+    )
+
+# def _load_weights_from_ds_zero_dir(model, maybe_dir: str) -> str:
+#     """
+#     Load ONLY model weights from a DeepSpeed ZeRO checkpoint directory into the LightningModule.
+#     Keeps optimizer/scheduler fresh (perfect for starting RL).
+#     """
+#     from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
+#     ds_root = _find_ds_ckpt_root(maybe_dir)
+#     logger.info(f"Loading DeepSpeed ZeRO checkpoint from: {ds_root}")
+#     fp32_sd = get_fp32_state_dict_from_zero_checkpoint(ds_root)  # returns a flat state_dict
+#     # Load into the LightningModule (no need to know inner attribute names)
+#     missing, unexpected = model.load_state_dict(fp32_sd, strict=False)
+#     return (f"Loaded DS ZeRO weights (fresh init) from {ds_root}; "
+#             f"missing={len(missing)}, unexpected={len(unexpected)}")
+
+def _rank0_only_zero_to_fp32_then_load(model, ds_zero_dir: str, out_file: str = None, tag: str = None):
+    """
+    Rank-0 converts a ZeRO checkpoint to a single FP32 state_dict file once.
+    All ranks then load that file (cheap) and we warm-start the LightningModule.
+    """
+    import torch
+    import torch.distributed as dist
+    from deepspeed.utils.zero_to_fp32 import convert_zero_checkpoint_to_fp32_state_dict
+
+    # pick a default destination
+    if out_file is None:
+        out_file = os.path.join(ds_zero_dir, "fp32_state_dict.pth")
+
+    is_dist = dist.is_initialized()
+    rank = dist.get_rank() if is_dist else 0
+
+    if rank == 0:
+        if not os.path.exists(out_file):
+            # One-shot offline conversion to a single .pth file
+            # (This avoids 6 concurrent conversions hammering the same shards)
+            convert_zero_checkpoint_to_fp32_state_dict(
+                checkpoint_dir=ds_zero_dir,
+                output_dir=os.path.dirname(out_file),
+                max_shard_size="0GB",      # produce a single file
+                safe_serialization=False,  # standard torch .pth
+                tag=tag
+            )
+        else:
+            logger.info(f"Reusing existing FP32 file: {out_file}")
+
+    if is_dist:
+        dist.barrier()  # wait for the file
+
+    # All ranks: load from the consolidated file (fast)
+    sd = torch.load(out_file, map_location="cpu")
+    missing, unexpected = model.load_state_dict(sd, strict=False)
+    return f"Warm-started from {out_file} (missing={len(missing)}, unexpected={len(unexpected)})"
+
+import os, json, glob, torch
+from collections import Counter
+
 import os, json, glob, gc, torch
+from collections import defaultdict
 
-def _rank0():
-    import torch.distributed as dist
-    return not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0
-
-def _broadcast_model_from_rank0(model):
-    import torch.distributed as dist
-    if dist.is_available() and dist.is_initialized():
-        for p in model.parameters(): dist.broadcast(p.data, src=0)
-        for b in model.buffers():    dist.broadcast(b.data, src=0)
-
-def _normalize_key(k: str) -> str:
-    if k.startswith("latent_policy."): return k
-    if not k.startswith("llm."): k = "llm." + k
-    if k.startswith("llm.model.model."):
-        k = "llm.model." + k[len("llm.model.model."):]
-    if k == "llm.embedding.weight":
-        k = "llm.model.embed_tokens.weight"
-    return k
-
-def _named_tensors(model):
-    d = {}
-    for n,p in model.named_parameters(): d[n] = p.data
-    for n,b in model.named_buffers():    d[n] = b.data
-    return d
-
-def _find_hf_index_dir(path: str) -> str:
+def _discover_hf_index_dir(path: str) -> str:
     if os.path.isdir(path) and os.path.exists(os.path.join(path, "pytorch_model.bin.index.json")):
         return path
-    hits = glob.glob(os.path.join(path, "**", "pytorch_model.bin.index.json"), recursive=True)
-    if not hits: raise FileNotFoundError(f"No HF index under {path}")
-    return os.path.dirname(hits[0])
+    # search one level down
+    cand = glob.glob(os.path.join(path, "**", "pytorch_model.bin.index.json"), recursive=True)
+    if not cand:
+        raise FileNotFoundError(f"No HF index json under: {path}")
+    return os.path.dirname(cand[0])
 
-@torch.no_grad()
-def load_hf_shards_inplace(model, path: str, cast_bf16: bool = True) -> str:
-    idx_dir = _find_hf_index_dir(path)
-    with open(os.path.join(idx_dir, "pytorch_model.bin.index.json")) as f:
-        weight_map = json.load(f)["weight_map"]
-    by_shard = {}
+def _remap_key_prefix(k: str, target_prefix: str) -> str:
+    # collapse duplicates like model.model. -> model.
+    if k.startswith("model.model."):
+        k = "model." + k[len("model.model."):]
+    if target_prefix and not k.startswith(target_prefix + "."):
+        k = f"{target_prefix}.{k}"
+    return k
+
+def _choose_target_prefix(model) -> str:
+    # If your LitCoLaR exposes the backbone with a specific name, prefer it here:
+    for name in ["model", "backbone", "language_model", "transformer", "llm", "base_model"]:
+        if hasattr(model, name) and isinstance(getattr(model, name), torch.nn.Module):
+            return name
+    # Otherwise load into the root module (no prefix)
+    return ""
+
+def load_hf_shards_streaming(model, ckpt_dir: str, cast_shards_to_bf16: bool = True, only_rank0: bool = True):
+    import os, json, glob, gc, torch
+    from collections import defaultdict
+
+    def _discover_hf_index_dir(path: str) -> str:
+        if os.path.isdir(path) and os.path.exists(os.path.join(path, "pytorch_model.bin.index.json")):
+            return path
+        cand = glob.glob(os.path.join(path, "**", "pytorch_model.bin.index.json"), recursive=True)
+        if not cand:
+            raise FileNotFoundError(f"No HF index json under: {path}")
+        return os.path.dirname(cand[0])
+
+    def _remap_key_prefix(k: str, target_prefix: str) -> str:
+        if k.startswith("model.model."):
+            k = "model." + k[len("model.model."):]
+        if target_prefix and not k.startswith(target_prefix + "."):
+            k = f"{target_prefix}.{k}"
+        return k
+
+    def _choose_target_prefix(model) -> str:
+        for name in ["model", "backbone", "language_model", "transformer", "llm", "base_model"]:
+            if hasattr(model, name) and isinstance(getattr(model, name), torch.nn.Module):
+                return name
+        return ""
+
+    # rank-0 only disk I/O (but always return a 3-tuple)
+    if only_rank0 and int(os.environ.get("RANK", "0")) != 0:
+        return ("Skipping shard IO on non-zero rank; will receive params via broadcast.",
+                [], [])
+
+    ckpt_dir = _discover_hf_index_dir(ckpt_dir)
+    index = json.load(open(os.path.join(ckpt_dir, "pytorch_model.bin.index.json")))
+    weight_map = index["weight_map"]
+
+    by_shard = defaultdict(list)
     for pname, shard in weight_map.items():
-        by_shard.setdefault(shard, []).append(pname)
+        by_shard[shard].append(pname)
 
-    target = _named_tensors(model); allowed = set(target.keys())
-    copied = 0
-    for shard, keys in by_shard.items():
-        shard_path = os.path.join(idx_dir, shard)
-        try:
-            part = torch.load(shard_path, map_location="cpu", weights_only=True)
-        except Exception:
-            part = torch.load(shard_path, map_location="cpu")
-        for k in keys:
-            t = part.get(k); 
-            if t is None: continue
-            nk = _normalize_key(k)
-            if nk not in allowed or target[nk].shape != t.shape: continue
-            if cast_bf16 and torch.is_floating_point(t): t = t.to(torch.bfloat16)
-            target[nk].copy_(t)
-            copied += 1
-        del part; gc.collect()
-    return f"HF shards loaded in-place from {idx_dir} (copied {copied} tensors)"
+    target_prefix = _choose_target_prefix(model)
 
-@torch.no_grad()
-def load_ds_states_weights_only(model, epoch_dir: str, cast_bf16: bool = True) -> str:
-    # Only the model file; ignores optimizer shards entirely.
-    mp_file = os.path.join(epoch_dir, "checkpoint", "mp_rank_00_model_states.pt")
-    if not os.path.exists(mp_file):
-        raise FileNotFoundError(mp_file)
-    # allowlist OmegaConf in PyTorch 2.6 safe loader
-    try:
-        from omegaconf import DictConfig
-        torch.serialization.add_safe_globals([DictConfig])
-    except Exception: pass
+    total_missing, total_unexpected = set(), set()
+    shard_files = sorted(set(weight_map.values()))
+    for shard in shard_files:
+        shard_path = os.path.join(ckpt_dir, shard)
+        sd = torch.load(shard_path, map_location="cpu")  # only this shard in RAM
 
-    state = torch.load(mp_file, map_location="cpu", weights_only=False)
-    sd = state.get("module", state.get("state_dict", state))
+        part = {}
+        for pname in by_shard[shard]:
+            if pname in sd:
+                t = sd[pname]
+                if cast_shards_to_bf16 and torch.is_floating_point(t):
+                    t = t.to(torch.bfloat16)
+                part[_remap_key_prefix(pname, target_prefix)] = t
 
-    target = model.state_dict()
-    keep = {}
-    for k, v in sd.items():
-        nk = _normalize_key(k)
-        if nk in target and target[nk].shape == v.shape:
-            keep[nk] = v.to(torch.bfloat16) if (cast_bf16 and torch.is_floating_point(v)) else v
-    # This loads only model tensors; no optimizer, no sched, nothing else.
-    missing, unexpected = model.load_state_dict(keep, strict=False)
-    del state, sd, keep; gc.collect()
-    return f"DS model weights loaded (missing={len(missing)}, unexpected={len(unexpected)})"
+        missing, unexpected = model.load_state_dict(part, strict=False)
+        total_missing.update(missing)
+        total_unexpected.update(unexpected)
 
-def load_weights_memory_safe(model, load_path: str, cast_bf16: bool = True) -> str:
-    # Prefer HF shards (lowest peak). If not present, fall back to DS model file.
-    if os.path.isdir(load_path):
-        try:
-            if _rank0():
-                msg = load_hf_shards_inplace(model, load_path, cast_bf16=cast_bf16)
-            _broadcast_model_from_rank0(model)
-            return msg if _rank0() else "HF shards received via broadcast"
-        except Exception:
-            # maybe it's an epoch dir without index.json; try DS file
-            pass
-        if _rank0():
-            msg = load_ds_states_weights_only(model, load_path, cast_bf16=cast_bf16)
-        _broadcast_model_from_rank0(model)
-        return msg if _rank0() else "DS weights received via broadcast"
-    else:
-        # Single Lightning .ckpt with 'state_dict' → filter weights only
-        try:
-            from omegaconf import DictConfig
-            torch.serialization.add_safe_globals([DictConfig])
-        except Exception: pass
-        blob = torch.load(load_path, map_location="cpu", weights_only=False)
-        sd = blob["state_dict"] if isinstance(blob, dict) and "state_dict" in blob else blob
-        target = model.state_dict()
-        keep = {}
-        for k, v in sd.items():
-            nk = _normalize_key(k)
-            if nk in target and target[nk].shape == v.shape:
-                keep[nk] = v.to(torch.bfloat16) if (cast_bf16 and torch.is_floating_point(v)) else v
-        missing, unexpected = model.load_state_dict(keep, strict=False)
-        del blob, sd, keep; gc.collect()
-        return f"Single-file weights loaded (missing={len(missing)}, unexpected={len(unexpected)})"
+        del sd, part
+        gc.collect()
+
+    msg = (f"Streaming-loaded HF shards from {ckpt_dir} -> target_prefix='{target_prefix}'; "
+           f"missing={len(total_missing)}, unexpected={len(total_unexpected)}")
+    return (msg, list(total_missing)[:20], list(total_unexpected)[:20])
+
+
+
 
 
 def get_args():
@@ -385,20 +467,7 @@ def main():
 
     model: pl.LightningModule = instantiate_from_config(config.model, extra_kwargs={"all_config": config})
     if p := args.load_ckpt_path:
-        # logger.info(model.load_state_dict(state_dict=torch.load(p, map_location="cpu", weights_only=False)["state_dict"], strict=False))
-        logger.info(load_weights_memory_safe(model, p, cast_bf16=True))
-        # pure = model.state_dict()
-        # torch.save(pure, "/mnt/disk/baseline_colar/colar_postsft_weights_only.bf16.pt")  # ~ model size
-        # logger.info(f"Saved model to /mnt/disk/baseline_colar/colar_postsft_weights_only.bf16.pt")
-        # msg, miss, unexp = load_colar_ckpt_smart(model, p, cast_bf16=True)
-        # logger.info(msg)
-        # if miss:
-        #     logger.info(f"Missing (sample): {miss}")
-        # if unexp:
-        #     logger.info(f"Unexpected (sample): {unexp}")
-
-        # logger.info(load_any_ckpt_into_model(model, p, cast_bf16=True))
-
+        logger.info(model.load_state_dict(state_dict=torch.load(p, map_location="cpu", weights_only=False)["state_dict"], strict=False))
     #     # replace the original logger.info(...) with:
     #     # logger.info(_load_ckpt_into_model_minimal(model, p))
     #     # logger.info(_load_weights_from_ds_zero_dir(model, p))

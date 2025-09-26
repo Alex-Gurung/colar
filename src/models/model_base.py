@@ -12,6 +12,9 @@ from peft import LoraConfig, get_peft_model
 from ..utils.utils import instantiate_from_config, get_timestamp, get_position_ids_from_attention_mask
 from ..utils.log import JsonLogger, TextLogger
 
+from liger_kernel.transformers import AutoLigerKernelForCausalLM, apply_liger_kernel_to_qwen2
+from torch.nn.utils.rnn import pad_sequence
+from deepspeed.ops.adam import DeepSpeedCPUAdam
 
 class LitCoTModelBase(pl.LightningModule):
     def __init__(
@@ -32,7 +35,7 @@ class LitCoTModelBase(pl.LightningModule):
         ### IMPORTANT: replace the llm path to YOUR OWN llm path ###
 
         # tokenizer
-        self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(llm_path)
+        self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(llm_path, trust_remote_code=True)
         if model_kwargs.get("set_pad_as_last_token", False):  # we don't use this, but might help
             self.tokenizer.pad_token = "[PAD]"
             self.tokenizer.pad_token_id = len(self.tokenizer) - 1
@@ -64,7 +67,21 @@ Question: {} Let's think step by step:
         self.answer_template = "Answer:{}"
 
         # llm
-        self.llm: LlamaForCausalLM = AutoModelForCausalLM.from_pretrained(llm_path)
+        model_class = AutoLigerKernelForCausalLM
+        # apply_liger_kernel_to_qwen2(
+        #     rope=True,
+        #     swiglu=True,
+        #     # cross_entropy=True,
+        #     cross_entropy=False,
+        #     # fused_linear_cross_entropy=False,
+        #     fused_linear_cross_entropy=True,
+        #     # rms_norm=False
+        #     rms_norm=True
+        # )
+
+        # model_class = AutoModelForCausalLM
+        self.llm = model_class.from_pretrained(llm_path, attn_implementation="flash_attention_2", trust_remote_code=True, dtype=torch.bfloat16)
+
         if not model_kwargs.get("set_pad_as_last_token", False):  # not used, but might help
             self.llm.resize_token_embeddings(len(self.tokenizer))
         self.llm.generation_config.pad_token_id = self.tokenizer.pad_token_id
@@ -76,6 +93,8 @@ Question: {} Let's think step by step:
             self.llm = get_peft_model(self.llm, peft_config=LoraConfig(**model_kwargs.lora_config))
             self.llm.print_trainable_parameters()
 
+
+        self.llm.gradient_checkpointing_enable() 
         # log
         self.sample_logs = defaultdict(dict)
 
@@ -90,6 +109,8 @@ Question: {} Let's think step by step:
                 trainable_params.append(param)
 
         optimizer = instantiate_from_config(kwargs.optimizer, extra_kwargs={"params": trainable_params})
+        # optimizer = instantiate_from_config(kwargs.optimizer, trainable_params)
+        # optimizer = DeepSpeedCPUAdam(trainable_params, lr=kwargs.optimizer.lr, weight_decay=kwargs.optimizer.weight_decay)
 
         if not kwargs.get("use_scheduler", False):
             return {"optimizer": optimizer}
@@ -112,6 +133,19 @@ Question: {} Let's think step by step:
         self.text_logger = TextLogger(self, log_file_name="log", tmp_log=self.all_config.args.no_log)
         self.text_logger.log(f"Start training with model:\n {self}\nconfig:\n{self.all_config}")
         self.json_logger = JsonLogger(self, log_file_name="train", tmp_log=self.all_config.args.no_log)
+
+        # Training setup verification box
+        print("\n" + "🚀" + "="*78 + "🚀")
+        print("🔥 TRAINING STARTING")
+        print("🚀" + "="*78 + "🚀")
+        print(f"🎯 Model: {type(self).__name__}")
+        print(f"🏋️  Trainable params: {sum(p.numel() for p in self.parameters() if p.requires_grad):,}")
+        print(f"🧊 Frozen params: {sum(p.numel() for p in self.parameters() if not p.requires_grad):,}")
+        print(f"⚡ Device count: {self.trainer.num_devices}")
+        print(f"📊 Effective batch size: {self.all_config.dataloader.batch_size * self.trainer.accumulate_grad_batches}")
+        print(f"🎲 Gradient accumulation: {self.trainer.accumulate_grad_batches}")
+        print("🚀" + "="*78 + "🚀" + "\n")
+
         return super().on_fit_start()
 
     def training_step(self, batch, batch_idx, dataloader_idx=0):
@@ -132,8 +166,34 @@ Question: {} Let's think step by step:
         return {}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
+        # Compute validation loss using the same forward pass as training
+        with torch.no_grad():
+            # Get loss from forward pass (same as training but no gradients)
+            if hasattr(self, 'forward'):
+                loss_output = self.forward(batch=batch)
+                val_loss = loss_output.get("total_loss", 0.0)
+                val_ce_loss = loss_output.get("ce_loss", 0.0)
+                val_embed_loss = loss_output.get("embed_modeling_loss", 0.0)
+                val_entropy = loss_output.get("entropy", 0.0)
+
+                # Log validation losses
+                loss_dict = {
+                    "monitor": val_loss,
+                    "val/loss": val_loss,
+                    "val/ce_loss": val_ce_loss,
+                    "val/embed_modeling_loss": val_embed_loss,
+                    "val/entropy": val_entropy
+                }
+            else:
+                loss_dict = {}
+
         # Evaluate the generation of the model on the validation data
-        log_dict = self.eval_generation(batch=batch, split="val", batch_idx=batch_idx, dataloader_idx=dataloader_idx)
+        generation_dict = self.eval_generation(batch=batch, split="val", batch_idx=batch_idx, dataloader_idx=dataloader_idx)
+
+        # Combine loss and generation metrics
+        log_dict = {**loss_dict, **generation_dict}
+        log_dict = loss_dict
+
         self.log_dict(
             log_dict,
             sync_dist=True,
@@ -260,12 +320,28 @@ Question: {} Let's think step by step:
         )
         question_position_ids = get_position_ids_from_attention_mask(question_attention_mask)
         question_embeds = self.embedding(question_input_ids)
+
+        # DEBUG: Check question processing
+        print(f"🎬 QUESTION PROCESSING DEBUG:")
+        print(f"   Speed suffix: '{suffix}'")
+        print(f"   Question input_ids shape: {question_input_ids.shape}")
+        print(f"   Question decoded (sample 0): '{self.tokenizer.decode(question_input_ids[0], skip_special_tokens=False)[:200]}...'")
+        print(f"   Question embedding norms: {question_embeds.norm(dim=-1)[0][:10].tolist()}")
+
         outputs = self.llm.forward(
             inputs_embeds=question_embeds,
             attention_mask=question_attention_mask,
             position_ids=question_position_ids,
             output_hidden_states=True,
         )
+
+        # DEBUG: Check initial LLM output
+        print(f"   Initial LLM logits shape: {outputs.logits.shape}")
+        initial_probs = torch.softmax(outputs.logits[0, -1], dim=-1)
+        top_initial = torch.topk(initial_probs, 5)
+        initial_tokens = [self.tokenizer.decode([tid]) for tid in top_initial.indices]
+        print(f"   Initial top tokens: {list(zip(initial_tokens, top_initial.values.tolist()))}")
+
         all_inputs_embeds.append(question_embeds)
 
         # 2: latent forward
@@ -286,7 +362,18 @@ Question: {} Let's think step by step:
             distributions = self.latent_policy.forward(
                 outputs.hidden_states[-1][:, -1:, :], temperature=latent_temperature
             )  # outputs from last loops
-            current_inputs_embeds = distributions.rsample() * (self.embeds_std)
+
+            # FIX: Scale latent embeddings to match question embedding norms
+            # Instead of using the hardcoded embeds_std (0.0136), use the actual
+            # norm of the question embeddings to prevent norm discontinuity
+            if _ == 0:  # Calculate target norm only once
+                target_embedding_norm = question_embeds.norm(dim=-1).mean().item()
+                print(f"🔧 EMBEDDING NORM FIX:")
+                print(f"   Old scaling (embeds_std): {self.embeds_std}")
+                print(f"   New scaling (question norm): {target_embedding_norm:.4f}")
+                print(f"   Ratio change: {target_embedding_norm / self.embeds_std:.2f}x")
+
+            current_inputs_embeds = distributions.rsample() * target_embedding_norm
             return_latent_inputs_embeds.append(current_inputs_embeds)
             all_inputs_embeds.append(current_inputs_embeds)
 
@@ -311,14 +398,36 @@ Question: {} Let's think step by step:
                 output_hidden_states=True,
             )
             past_key_values = outputs.past_key_values
+            print(f"past_key_values: {past_key_values}")
 
             last_logits = outputs.logits[:, -1]
             probs = torch.softmax(last_logits / latent_generation_config.get("eol_temperature", 1.0), dim=-1)
             batch_next_token = torch.multinomial(probs, num_samples=1)  # [n, 1]
 
+            # DEBUG: Show what tokens are being predicted
+            print(f"🎯 LATENT STEP {_} DEBUG:")
+            predicted_tokens = self.tokenizer.batch_decode(batch_next_token, skip_special_tokens=False)
+            print(f"   Predicted next tokens: {predicted_tokens}")
+            print(f"   thinking_separator_id: {self.thinking_separator_id} ('{self.thinking_separator}')")
+
+            # Show top 10 most likely tokens for first sample
+            top_k = torch.topk(probs[0], 10)
+            top_token_ids = top_k.indices.tolist()
+            top_token_probs = top_k.values.tolist()
+            top_token_strs = [self.tokenizer.decode([tid]) for tid in top_token_ids]
+            print(f"   Top 10 tokens for sample 0:")
+            for i, (token_str, prob, tid) in enumerate(zip(top_token_strs, top_token_probs, top_token_ids)):
+                marker = " ← SELECTED" if tid == batch_next_token[0].item() else ""
+                print(f"     {i+1:2d}. '{token_str}' (id={tid}) prob={prob:.4f}{marker}")
+
             is_eol = batch_next_token == self.thinking_separator_id
             is_done = is_done | is_eol
+            print(f"   is_eol: {is_eol.tolist()}")
+            print(f"   is_done: {is_done.tolist()}")
+
             if is_done.all():
+                break
+            if _ > 10:
                 break
 
         # all_latent_hidden_states = torch.cat(all_latent_hidden_states, dim=2)
@@ -340,9 +449,70 @@ Question: {} Let's think step by step:
         # 4: answer generation
         all_inputs_embeds = torch.cat(all_inputs_embeds, dim=1)
 
+        # DEBUG: Show what's being fed to final generation
+        print(f"🚀 FINAL GENERATION DEBUG:")
+        print(f"   Input embeddings shape: {all_inputs_embeds.shape}")
+        print(f"   Input attention_mask shape: {all_attention_mask.shape}")
+        print(f"   Input sequence length: {all_inputs_embeds.shape[1]}")
+        print(f"   answer_generation_config: {answer_generation_config}")
+
+        # DEEP DEBUG: Check the structure of input embeddings
+        print(f"🔍 DEEP EMBEDDING ANALYSIS:")
+        print(f"   Question length: {question_input_ids.shape[1]}")
+        print(f"   Latent embeddings count: {len(return_latent_inputs_embeds)}")
+        print(f"   End-of-thinking: 1 token")
+
+        # Check embedding norms at different positions
+        emb_norms = all_inputs_embeds.norm(dim=-1)[0]  # First sample
+        print(f"   Embedding norms (first 10): {emb_norms[:10].tolist()}")
+        print(f"   Embedding norms (last 10): {emb_norms[-10:].tolist()}")
+        print(f"   Question embeddings norm mean: {emb_norms[:question_input_ids.shape[1]].mean().item():.4f}")
+        if len(return_latent_inputs_embeds) > 0:
+            latent_start = question_input_ids.shape[1]
+            latent_end = latent_start + len(return_latent_inputs_embeds)
+            print(f"   Latent embeddings norm mean: {emb_norms[latent_start:latent_end].mean().item():.4f}")
+
+        # Check attention mask pattern
+        attn_first = all_attention_mask[0]
+        print(f"   Attention mask sum: {attn_first.sum().item()}/{attn_first.shape[0]}")
+        print(f"   First 20 attention: {attn_first[:20].tolist()}")
+        print(f"   Last 20 attention: {attn_first[-20:].tolist()}")
+
+        # Check for any NaN or inf values
+        if torch.isnan(all_inputs_embeds).any():
+            print("   ❌ WARNING: NaN values in input embeddings!")
+        if torch.isinf(all_inputs_embeds).any():
+            print("   ❌ WARNING: Inf values in input embeddings!")
+
+        # IMPORTANT: Need to verify generate() behavior with inputs_embeds
+        # Testing hypothesis: generate() with inputs_embeds returns ONLY new tokens
+        # OR does it return [input_length + new_tokens]?
         pred_ids = self.llm.generate(
             inputs_embeds=all_inputs_embeds, attention_mask=all_attention_mask, **answer_generation_config
         )
+
+        print(f"   OUTPUT pred_ids shape: {pred_ids.shape}")
+        input_length = all_inputs_embeds.shape[1]
+        output_length = pred_ids.shape[1]
+
+        if pred_ids.shape[1] > 0:
+            decoded_full = self.tokenizer.batch_decode(pred_ids, skip_special_tokens=False)
+            print(f"   Full output (sample 0): '{decoded_full[0][:200]}{'...' if len(decoded_full[0]) > 200 else ''}'")
+
+            # Key test: Does output length > input length?
+            if output_length > input_length:
+                print(f"   CASE 1: Output includes input + new tokens ({output_length} > {input_length})")
+                new_tokens = pred_ids[:, input_length:]
+                if new_tokens.shape[1] > 0:
+                    decoded_new = self.tokenizer.batch_decode(new_tokens, skip_special_tokens=False)
+                    print(f"   NEW tokens only: '{decoded_new[0][:200]}{'...' if len(decoded_new[0]) > 200 else ''}'")
+            elif output_length == input_length:
+                print(f"   CASE 2: No new tokens generated (output == input length)")
+            else:
+                print(f"   CASE 3: Output is ONLY new tokens ({output_length} tokens)")
+                print(f"   These ARE the new tokens: '{decoded_full[0][:200]}{'...' if len(decoded_full[0]) > 200 else ''}'")
+        else:
+            print(f"   ERROR: Empty output!")
 
         if rl_mode:
             res = (
@@ -372,6 +542,260 @@ Question: {} Let's think step by step:
             )
 
         return res
+
+    # @torch.no_grad()
+    # def latent_generate(
+    #     self,
+    #     questions,
+    #     rl_mode=False,
+    #     return_latent_hidden_states=False,  # for evaluation
+    #     _disable_microbatch: bool = False,  # internal guard (do not set from outside)
+    # ):
+    #     # ---------- MICROBATCH WRAPPER (minimal changes) ----------
+    #     lgc = self.model_kwargs.latent_generation_config
+    #     # micro_bs = int(lgc.get("eval_microbatch_size", 0) or 0)
+    #     micro_bs = 1
+
+    #     if not _disable_microbatch and micro_bs > 0 and len(questions) > micro_bs:
+    #         # split into chunks and call ourselves with microbatching disabled
+    #         def _chunks(lst, n):
+    #             for i in range(0, len(lst), n):
+    #                 yield lst[i:i+n]
+
+    #         # utilities to pad/concat results across variable lengths
+    #         def _pad_cat_long_2d(tensors, pad_value):
+    #             # tensors: list of [b_i, L_i] Long
+    #             # returns [B, L_max]
+    #             seqs = [t if t.dim() == 2 else t.view(1, -1) for t in tensors]
+    #             # pad_sequence works on list of [L] or [L, *], so do per-row
+    #             rows = []
+    #             for t in seqs:
+    #                 for r in t: rows.append(r)
+    #             padded = pad_sequence(rows, batch_first=True, padding_value=pad_value)
+    #             B = sum(t.shape[0] for t in seqs)
+    #             return padded.view(B, -1)
+
+    #         def _pad_cat_float_3d(tensors, pad_value=0.0):
+    #             # tensors: list of [b_i, T_i, H] Float
+    #             # returns [B, T_max, H]
+    #             rows = []
+    #             for t in tensors:
+    #                 if t.numel() == 0:
+    #                     # create a 1x0xH row to keep shape (we'll pad later)
+    #                     H = tensors[0].shape[-1]
+    #                     t = t.new_zeros((t.shape[0], 0, H))
+    #                 for r in t: rows.append(r)  # [T,H]
+    #             # pad sequence on T dimension
+    #             padded = pad_sequence(rows, batch_first=True, padding_value=pad_value)  # [B, T_max, H]
+    #             return padded
+
+    #         def _pad_cat_float_4d(tensors, pad_value=0.0):
+    #             # tensors: list of [b_i, L, T_i, H] Float
+    #             # pad on T dimension and concat on batch
+    #             if not tensors:
+    #                 return torch.empty(0)
+    #             L = tensors[0].shape[1]
+    #             H = tensors[0].shape[-1]
+    #             rows = []
+    #             for t in tensors:
+    #                 # split into per-batch [L, T_i, H]
+    #                 for r in t:
+    #                     rows.append(r)  # [L, T_i, H]
+    #             # we need to pad each layer independently on T, then stack back
+    #             # transpose to layer-major lists
+    #             per_layer = [[] for _ in range(L)]
+    #             for r in rows:
+    #                 for l in range(L):
+    #                     per_layer[l].append(r[l])  # [T_i, H]
+    #             padded_layers = []
+    #             for l in range(L):
+    #                 padded_L = pad_sequence(per_layer[l], batch_first=True, padding_value=pad_value)  # [B, T_max, H]
+    #                 padded_layers.append(padded_L.unsqueeze(1))  # [B,1,T_max,H]
+    #             out = torch.cat(padded_layers, dim=1)  # [B,L,T_max,H]
+    #             return out
+
+    #         all_pred, all_nlat = [], []
+    #         all_q_ids, all_q_m = [], []
+    #         all_lat_inp, all_lat_m = [], []
+    #         all_lat_hs = []
+
+    #         pad_id = self.tokenizer.pad_token_id if getattr(self, "tokenizer", None) else 0
+    #         dev = self.device
+
+    #         for chunk in _chunks(questions, micro_bs):
+    #             res = self.latent_generate(
+    #                 chunk,
+    #                 rl_mode=rl_mode,
+    #                 return_latent_hidden_states=return_latent_hidden_states,
+    #                 _disable_microbatch=True,
+    #             )
+    #             if rl_mode:
+    #                 q_ids, q_msk, lat_inp, lat_msk, ans_hash = res
+    #                 all_q_ids.append(q_ids.to(dev))
+    #                 all_q_m.append(q_msk.to(dev))
+    #                 all_lat_inp.append(lat_inp.to(dev))
+    #                 all_lat_m.append(lat_msk.to(dev))
+    #                 all_pred.append(ans_hash.to(dev))
+    #             else:
+    #                 if return_latent_hidden_states:
+    #                     pred_ids, n_latent_forward, lat_hs = res
+    #                     all_pred.append(pred_ids.to(dev))
+    #                     all_nlat.append(n_latent_forward.to(dev))
+    #                     all_lat_hs.append(lat_hs.to(dev))
+    #                 else:
+    #                     pred_ids, n_latent_forward = res
+    #                     all_pred.append(pred_ids.to(dev))
+    #                     all_nlat.append(n_latent_forward.to(dev))
+
+    #         if rl_mode:
+    #             q_ids_cat = _pad_cat_long_2d(all_q_ids, pad_id)
+    #             q_msk_cat = _pad_cat_long_2d(all_q_m, 0)
+    #             lat_inp_cat = _pad_cat_float_3d(all_lat_inp, 0.0)
+    #             lat_msk_cat = _pad_cat_long_2d(all_lat_m, 0)
+    #             ans_cat = _pad_cat_long_2d(all_pred, pad_id)
+    #             return q_ids_cat, q_msk_cat, lat_inp_cat, lat_msk_cat, ans_cat
+
+    #         if return_latent_hidden_states:
+    #             pred_cat = _pad_cat_long_2d(all_pred, pad_id)
+    #             nlat_cat = torch.cat(all_nlat, dim=0).view(-1, 1) if all_nlat else torch.empty(0, 1, dtype=torch.long, device=dev)
+    #             hs_cat   = _pad_cat_float_4d(all_lat_hs, 0.0)
+    #             return pred_cat, nlat_cat, hs_cat
+
+    #         pred_cat = _pad_cat_long_2d(all_pred, pad_id)
+    #         nlat_cat = torch.cat(all_nlat, dim=0).view(-1, 1) if all_nlat else torch.empty(0, 1, dtype=torch.long, device=dev)
+    #         return pred_cat, nlat_cat
+    #     # ---------- END MICROBATCH WRAPPER ----------
+
+    #     # ================== ORIGINAL BODY (unchanged) ==================
+    #     latent_generation_config = self.model_kwargs.latent_generation_config
+    #     answer_generation_config = self.model_kwargs.answer_generation_config
+    #     max_n_latent_forward = latent_generation_config.max_n_latent_forward
+    #     latent_temperature = latent_generation_config.get("latent_temperature", 1.0)
+
+    #     batch_size = len(questions)
+    #     n_latent_forward = torch.zeros(size=(batch_size, 1), device=self.device, dtype=torch.long)
+    #     all_inputs_embeds = []
+
+    #     # 1: question forward
+    #     # question: [pad, question, speed, ###]
+    #     speed = latent_generation_config["compression_factor"]
+    #     suffix = self.speed_template.format(speed) + self.thinking_separator
+
+    #     question_input_ids, question_attention_mask = self.prepare_inputs(
+    #         questions,
+    #         padding_side="left",
+    #         part="question",
+    #         suffix=suffix,
+    #     )
+    #     question_position_ids = get_position_ids_from_attention_mask(question_attention_mask)
+    #     question_embeds = self.embedding(question_input_ids)
+    #     outputs = self.llm.forward(
+    #         inputs_embeds=question_embeds,
+    #         attention_mask=question_attention_mask,
+    #         position_ids=question_position_ids,
+    #         output_hidden_states=True,
+    #     )
+    #     all_inputs_embeds.append(question_embeds)
+
+    #     # 2: latent forward
+    #     all_attention_mask = question_attention_mask
+    #     current_position_ids = question_position_ids[:, -1:]
+    #     past_key_values = outputs.past_key_values
+    #     is_done = torch.zeros(size=(batch_size, 1), device=self.device, dtype=torch.bool)
+
+    #     return_latent_inputs_embeds = []
+    #     return_latent_attention_mask = []
+    #     all_latent_hidden_states = []
+
+    #     for _ in range(max_n_latent_forward):
+    #         if return_latent_hidden_states:
+    #             all_latent_hidden_states.append(torch.stack(outputs.hidden_states, dim=1)[:, :, -1:, :])
+    #         distributions = self.latent_policy.forward(
+    #             outputs.hidden_states[-1][:, -1:, :], temperature=latent_temperature
+    #         )
+    #         current_inputs_embeds = distributions.rsample() * (self.embeds_std)
+
+    #         # DEBUG: Check if latent policy is generating reasonable embeddings
+    #         if _ == 0:  # Only log first iteration
+    #             print(f"🔍 LATENT POLICY DEBUG:")
+    #             print(f"   embeds_std: {self.embeds_std}")
+    #             print(f"   distribution mean: {distributions.mean.mean().item():.6f}")
+    #             print(f"   distribution std: {distributions.scale.mean().item():.6f}")
+    #             print(f"   sampled embedding norm: {current_inputs_embeds.norm().item():.6f}")
+    #             print(f"   sampled embedding sample: {current_inputs_embeds[0, 0, :5].tolist()}")
+    #         return_latent_inputs_embeds.append(current_inputs_embeds)
+    #         all_inputs_embeds.append(current_inputs_embeds)
+
+    #         not_is_done_long = (~is_done).long()
+    #         all_attention_mask = torch.cat([all_attention_mask, not_is_done_long], dim=1)
+    #         return_latent_attention_mask.append(not_is_done_long)
+
+    #         current_position_ids = current_position_ids + not_is_done_long
+    #         n_latent_forward += not_is_done_long
+
+    #         outputs = self.llm.forward(
+    #             inputs_embeds=current_inputs_embeds,
+    #             attention_mask=all_attention_mask,
+    #             position_ids=current_position_ids,
+    #             past_key_values=past_key_values,
+    #             output_hidden_states=True,
+    #         )
+    #         past_key_values = outputs.past_key_values
+
+    #         last_logits = outputs.logits[:, -1]
+    #         probs = torch.softmax(last_logits / latent_generation_config.get("eol_temperature", 1.0), dim=-1)
+    #         batch_next_token = torch.multinomial(probs, num_samples=1)  # [n, 1]
+
+    #         is_eol = batch_next_token == self.thinking_separator_id
+    #         is_done = is_done | is_eol
+    #         if is_done.all():
+    #             break
+
+    #     # 3: add end of thinking
+    #     end_of_thinking_ids = (
+    #         torch.ones(size=(batch_size, 1), device=self.device, dtype=torch.long) * self.thinking_separator_id
+    #     )
+    #     end_of_thinking_embeds = self.embedding(end_of_thinking_ids)
+    #     all_inputs_embeds.append(end_of_thinking_embeds)
+    #     all_attention_mask = torch.cat(
+    #         [all_attention_mask, torch.ones(size=(batch_size, 1), device=self.device, dtype=torch.long)], dim=1
+    #     )
+
+    #     # 4: answer generation
+    #     all_inputs_embeds = torch.cat(all_inputs_embeds, dim=1)
+    #     pred_ids = self.llm.generate(
+    #         inputs_embeds=all_inputs_embeds, attention_mask=all_attention_mask, **answer_generation_config
+    #     )
+
+    #     if rl_mode:
+    #         res = (
+    #             question_input_ids,
+    #             question_attention_mask,
+    #             torch.cat(return_latent_inputs_embeds, dim=1) if len(return_latent_inputs_embeds) > 0
+    #                 else torch.empty(batch_size, 0, all_inputs_embeds.shape[-1], device=self.device),
+    #             torch.cat(return_latent_attention_mask, dim=1) if len(return_latent_attention_mask) > 0
+    #                 else torch.empty(batch_size, 0, dtype=torch.long, device=self.device),
+    #             torch.cat(
+    #                 [
+    #                     torch.ones(size=(batch_size, 1), device=self.device, dtype=torch.long)
+    #                     * self.thinking_separator_id,
+    #                     pred_ids,
+    #                 ],
+    #                 dim=1,
+    #             ),
+    #         )
+    #     elif return_latent_hidden_states:
+    #         res = (
+    #             pred_ids,
+    #             n_latent_forward,
+    #             torch.cat(all_latent_hidden_states, dim=2) if len(all_latent_hidden_states) > 0
+    #                 else torch.zeros(batch_size, len(outputs.hidden_states), 0, outputs.hidden_states[-1].shape[-1], device=self.device),
+    #         )
+    #     else:
+    #         res = (pred_ids, n_latent_forward)
+
+    #     return res
+
 
     @torch.no_grad()
     def fixed_length_latent_generate(self, questions: List[str]):
@@ -460,15 +884,22 @@ Question: {} Let's think step by step:
         answers = batch["answer"]
         steps = batch["steps"]
 
-        # predict answers
-        if (sft_method := self.model_kwargs.sft_method.lower()) == "colar":
-            outputs_token_ids, n_latent_forward = self.latent_generate(questions=questions)
-        elif sft_method == "coconut" or sft_method == "distill":
-            outputs_token_ids, n_latent_forward = self.fixed_length_latent_generate(questions=questions)
-        elif sft_method == "cot" or sft_method == "icot":
-            outputs_token_ids, n_latent_forward = self.text_generate(questions=questions)
-        else:
-            raise NotImplementedError(f"Unknown sft_method: {sft_method}")
+        # print(f"questions: {questions}")
+        print(f"len(questions): {len(questions)}")
+        print(f"len(answers): {len(answers)}")
+        print(f"len(steps): {len(steps)}")
+        print(f"len(indices): {len(indices)}")
+
+        with torch.no_grad():
+            # predict answers
+            if (sft_method := self.model_kwargs.sft_method.lower()) == "colar":
+                outputs_token_ids, n_latent_forward = self.latent_generate(questions=questions)
+            elif sft_method == "coconut" or sft_method == "distill":
+                outputs_token_ids, n_latent_forward = self.fixed_length_latent_generate(questions=questions)
+            elif sft_method == "cot" or sft_method == "icot":
+                outputs_token_ids, n_latent_forward = self.text_generate(questions=questions)
+            else:
+                raise NotImplementedError(f"Unknown sft_method: {sft_method}")
 
         output_strings = self.tokenizer.batch_decode(outputs_token_ids, skip_special_tokens=True)
 
@@ -511,7 +942,7 @@ Question: {} Let's think step by step:
         mean_output_length = np.mean(all_output_length)
 
         res = {
-            "monitor": mean_acc,
+            # "monitor": mean_acc,
             f"{split}/acc": mean_acc,
             f"{split}/n_latent_forward": mean_n_latent_forward,
             f"{split}/n_latent_forward_on_acc": mean_n_latent_forward_on_acc,

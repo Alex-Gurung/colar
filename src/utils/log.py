@@ -16,9 +16,22 @@ class JsonLogger:
 
         try:
             if save_dir is None:
-                save_dir = pl_class.logger.log_dir
+                # Try different logger types
+                if hasattr(pl_class.logger, 'log_dir'):
+                    save_dir = pl_class.logger.log_dir
+                elif hasattr(pl_class.logger, 'save_dir'):
+                    save_dir = pl_class.logger.save_dir
+                else:
+                    save_dir = "logs"  # fallback directory
+
+            # Ensure save_dir is not None before creating Path
+            if save_dir is None:
+                save_dir = "logs"
+
+            # Create directory if it doesn't exist
+            Path(save_dir).mkdir(parents=True, exist_ok=True)
             self.log_path = Path(save_dir) / f"{log_file_name}.json"
-        except AttributeError:
+        except (AttributeError, TypeError):
             self.log_path = Path("temp_log.json")
 
     @rank_zero_only
@@ -38,9 +51,22 @@ class TextLogger:
 
         try:
             if save_dir is None:
-                save_dir = pl_class.logger.log_dir
+                # Try different logger types
+                if hasattr(pl_class.logger, 'log_dir'):
+                    save_dir = pl_class.logger.log_dir
+                elif hasattr(pl_class.logger, 'save_dir'):
+                    save_dir = pl_class.logger.save_dir
+                else:
+                    save_dir = "logs"  # fallback directory
+
+            # Ensure save_dir is not None before creating Path
+            if save_dir is None:
+                save_dir = "logs"
+
+            # Create directory if it doesn't exist
+            Path(save_dir).mkdir(parents=True, exist_ok=True)
             self.log_path = Path(save_dir) / f"{log_file_name}.txt"
-        except AttributeError:
+        except (AttributeError, TypeError):
             self.log_path = Path("temp_log.txt")
 
     @rank_zero_only

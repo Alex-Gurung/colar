@@ -1,5 +1,6 @@
 import tqdm
 import random
+import time
 from typing import List, Tuple
 import torch.nn.functional as F
 import torch
@@ -12,6 +13,63 @@ from ..modules import grpo
 from ..utils.utils import get_position_ids_from_attention_mask, sample_indices_from_attention_mask_3d
 from ..utils.constants import MODEL_EMB_STD
 
+try:
+    from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
+    _HAS_LIGER = True
+    _FUSED_CE_SUM = LigerFusedLinearCrossEntropyLoss(reduction="sum")  # sum now, mean later
+except Exception:
+    _HAS_LIGER = False
+    _FUSED_CE_SUM = None
+
+def ce_on_selected_tokens(
+    last_hidden: torch.Tensor,     # [B, T, D]
+    labels: torch.Tensor,          # [B, T]  (-100 = ignore)
+    lm_head,                       # nn.Linear
+    chunk_size: int = 512,
+    backend: str = "liger",        # "liger" or "torch"
+) -> torch.Tensor:
+    """
+    Computes CE only on positions where labels != -100, in chunks to avoid [*, V] blowups.
+
+    backend="liger": uses fused linear+CE (no logits materialized)
+    backend="torch": computes logits via lm_head(s) and uses torch CE
+    """
+    mask = labels.ne(-100)
+    if not mask.any():
+        return last_hidden.new_zeros(())
+
+    sel_states = last_hidden[mask]  # [N, D]
+    sel_labels = labels[mask]       # [N]
+    # Ensure proper dtype for CE targets
+    if sel_labels.dtype != torch.long:
+        sel_labels = sel_labels.long()
+
+    N = sel_states.size(0)
+    loss_sum = sel_states.new_zeros(())
+
+    use_liger = (backend == "liger") and _HAS_LIGER
+
+    # Pull weights once
+    weight = lm_head.weight if use_liger else None
+    bias = getattr(lm_head, "bias", None) if use_liger else None
+
+    for i in range(0, N, chunk_size):
+        s = sel_states[i:i + chunk_size]  # [n_i, D]
+        y = sel_labels[i:i + chunk_size]  # [n_i]
+
+        if use_liger:
+            # Fused matmul + CE (no [n_i, V] logits tensor)
+            if bias is None:
+                loss_sum = loss_sum + _FUSED_CE_SUM(weight, s, y)
+            else:
+                loss_sum = loss_sum + _FUSED_CE_SUM(weight, s, y, bias)
+        else:
+            # Torch fallback: project then CE on this small slice
+            logits = lm_head(s)  # [n_i, V]
+            # Upcast only this tiny slice for numeric stability
+            loss_sum = loss_sum + F.cross_entropy(logits.float(), y, reduction="sum")
+
+    return loss_sum / float(N)
 
 class LitCoLaR(LitCoTModelBase):
     def __init__(
@@ -30,8 +88,71 @@ class LitCoLaR(LitCoTModelBase):
         )
         self.embeds_std = MODEL_EMB_STD[model_kwargs.model_id]
 
+        # FROZEN-LLM-SFT: Freeze base LLM if requested
+        if model_kwargs.get("freeze_base_llm", False):
+            self._freeze_base_llm_parameters()
+
         if model_kwargs.do_rl:
             self.init_rl()
+
+        # self.fused_ce_sum = LigerFusedLinearCrossEntropyLoss(reduction="sum")
+
+    def _freeze_base_llm_parameters(self):  # FROZEN-LLM-SFT: Freeze base LLM parameters
+        """
+        Freeze base LLM parameters while keeping CoLaR-specific parameters trainable.
+
+        Frozen:
+        - llm.* (all base model parameters)
+
+        Trainable:
+        - latent_policy.* (LatentPolicy network)
+        - llm.embed_tokens (only if new tokens were added)
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        logger.info("Freezing base LLM parameters for CoLaR SFT")
+
+        # FROZEN-LLM-SFT: Get original vocab size to detect added tokens
+        original_vocab_size = getattr(self.llm.config, 'vocab_size', len(self.tokenizer) - 10)
+        current_vocab_size = self.llm.get_input_embeddings().weight.shape[0]
+        added_tokens = current_vocab_size > original_vocab_size
+
+        frozen_count = 0
+        trainable_count = 0
+
+        for name, param in self.named_parameters():
+            if name.startswith('llm.'):
+                # FROZEN-LLM-SFT: Keep embedding of added tokens trainable
+                if added_tokens and 'embed_tokens' in name:
+                    # Only freeze original token embeddings, keep new ones trainable
+                    if hasattr(param, 'data'):
+                        param.data[:original_vocab_size].requires_grad_(False)
+                        param.data[original_vocab_size:].requires_grad_(True)
+                    param.requires_grad = True
+                    trainable_count += param.numel()
+                    logger.info(f"Keeping added token embeddings trainable: {name}")
+                else:
+                    # FROZEN-LLM-SFT: Freeze all other LLM parameters
+                    param.requires_grad = False
+                    frozen_count += param.numel()
+
+            elif name.startswith('latent_policy.'):
+                # FROZEN-LLM-SFT: Keep LatentPolicy trainable
+                param.requires_grad = True
+                trainable_count += param.numel()
+                logger.info(f"Keeping CoLaR parameter trainable: {name}")
+
+            else:
+                # FROZEN-LLM-SFT: Other parameters (if any) - keep trainable by default
+                param.requires_grad = True
+                trainable_count += param.numel()
+                if param.numel() > 0:  # Only log if parameter exists
+                    logger.info(f"Keeping other parameter trainable: {name}")
+
+        logger.info(f"Frozen parameters: {frozen_count:,}")
+        logger.info(f"Trainable parameters: {trainable_count:,}")
+        logger.info(f"Frozen percentage: {frozen_count / (frozen_count + trainable_count) * 100:.1f}%")
 
     # ++ basic methods implemenration begins ++#
     def limit_rl_train_epoch_length(self):
@@ -58,11 +179,161 @@ class LitCoLaR(LitCoTModelBase):
     # -- basic methods implemenration ends --#
 
     # ++ sft implementation begins ++#
+    # def sft_training_step(self, batch, batch_idx, dataloader_idx=0):
+    #     step_start_time = time.time()
+
+    #     log_dict = self.forward(batch=batch)
+    #     log_dict = {f'train/{k}': v for k, v in log_dict.items()}
+
+    #     # Add performance and memory metrics
+    #     step_time = time.time() - step_start_time
+    #     if torch.cuda.is_available():
+    #         memory_allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+    #         memory_reserved = torch.cuda.memory_reserved() / 1024**3   # GB
+    #         memory_peak = torch.cuda.max_memory_allocated() / 1024**3  # GB
+
+    #         log_dict.update({
+    #             'train/step_time': step_time,
+    #             'train/memory_allocated_gb': memory_allocated,
+    #             'train/memory_reserved_gb': memory_reserved,
+    #             'train/memory_peak_gb': memory_peak,
+    #         })
+
+    #     # Add gradient norms and learning rate
+    #     if hasattr(self, 'trainer') and self.trainer.optimizers:
+    #         optimizer = self.trainer.optimizers[0]
+    #         # Learning rate
+    #         current_lr = optimizer.param_groups[0]['lr']
+    #         log_dict['train/learning_rate'] = current_lr
+
+    #         # Gradient norms for different components
+    #         latent_policy_grad_norm = 0.0
+    #         llm_grad_norm = 0.0
+
+    #         for name, param in self.named_parameters():
+    #             if param.grad is not None:
+    #                 param_norm = param.grad.data.norm(2).item()
+    #                 if 'latent_policy' in name:
+    #                     latent_policy_grad_norm += param_norm ** 2
+    #                 elif 'llm' in name:
+    #                     llm_grad_norm += param_norm ** 2
+
+    #         log_dict.update({
+    #             'train/latent_policy_grad_norm': latent_policy_grad_norm ** 0.5,
+    #             'train/llm_grad_norm': llm_grad_norm ** 0.5,
+    #         })
+
+    #     self.log_dict(log_dict, sync_dist=True, prog_bar=True, batch_size=len(batch['idx']))
+    #     return log_dict['train/total_loss']
+
     def sft_training_step(self, batch, batch_idx, dataloader_idx=0):
-        log_dict = self.forward(batch=batch)
-        log_dict = {f'train/{k}': v for k, v in log_dict.items()}
-        self.log_dict(log_dict, sync_dist=True, prog_bar=True, batch_size=len(batch['idx']))
-        return log_dict['train/total_loss']
+        step_start_time = time.time()
+
+        # forward returns a dict with 'total_loss' and many metrics
+        out = self.forward(batch=batch)
+        loss = out["total_loss"]                      # keep graph for backward
+
+        # -------- helpers --------
+        def _scalar(x):
+            """Make a 0-d float tensor on this device (safe for sync_dist)."""
+            if torch.is_tensor(x):
+                t = x.detach().to(self.device).float()
+                return t if t.ndim == 0 else t.mean()
+            return torch.tensor(float(x), device=self.device, dtype=torch.float32)
+
+        # Ensure fields that may be omitted by forward() are ALWAYS present
+        steps_len = int(out.get("steps_length", 0))
+        if "original_steps_length" not in out:
+            out["original_steps_length"] = steps_len
+        if "compressed_steps_length" not in out:
+            out["compressed_steps_length"] = steps_len
+        if "actual_compression_ratio" not in out:
+            out["actual_compression_ratio"] = 1.0
+        if "pred_embed_forward_loss" not in out:
+            out["pred_embed_forward_loss"] = 0.0
+
+        # Stable schema: EVERY rank logs these keys EVERY step
+        schema = [
+            # losses
+            "total_loss",
+            "ce_loss",
+            "pred_embed_forward_loss",
+            "embed_modeling_loss",
+            "entropy",
+            # lengths
+            "question_length",
+            "steps_length",
+            "answer_length",
+            "total_sequence_length",
+            # compression
+            "compression_factor",
+            "original_steps_length",
+            "compressed_steps_length",
+            "actual_compression_ratio",
+            # latent stats / norms
+            "latent_policy_mean_std",
+            "latent_policy_entropy",
+            "embedding_norm",
+        ]
+
+        # Build log dict with stable keys → 0-d tensors on self.device
+        logs = {f"train/{k}": _scalar(out.get(k, 0.0)) for k in schema}
+
+        # Perf + memory (also as 0-d tensors)
+        step_time = time.time() - step_start_time
+        logs["train/step_time"] = _scalar(step_time)
+
+        if torch.cuda.is_available():
+            dev_idx = self.device.index if isinstance(self.device, torch.device) else torch.cuda.current_device()
+            logs["train/memory_allocated_gb"] = _scalar(torch.cuda.memory_allocated(dev_idx) / 1024**3)
+            logs["train/memory_reserved_gb"]  = _scalar(torch.cuda.memory_reserved(dev_idx)  / 1024**3)
+            logs["train/memory_peak_gb"]      = _scalar(torch.cuda.max_memory_allocated(dev_idx) / 1024**3)
+        else:
+            logs["train/memory_allocated_gb"] = _scalar(0.0)
+            logs["train/memory_reserved_gb"]  = _scalar(0.0)
+            logs["train/memory_peak_gb"]      = _scalar(0.0)
+
+        # Learning rate (grad norms are better in on_after_backward)
+        if getattr(self, "trainer", None) and self.trainer.optimizers:
+            opt = self.trainer.optimizers[0]
+            logs["train/learning_rate"] = _scalar(opt.param_groups[0]["lr"])
+        else:
+            logs["train/learning_rate"] = _scalar(0.0)
+
+        # Optional: a 'monitor' metric if your checkpoint callback expects it
+        logs["train/monitor"] = -_scalar(out["total_loss"])
+
+        # ✅ True cross-GPU reductions: identical keys & scalar shapes on all ranks
+        bs = len(batch["question"]) if "question" in batch else (len(batch.get("idx", [])) or 1)
+        self.log_dict(
+            logs,
+            on_step=True,
+            prog_bar=True,
+            sync_dist=True,
+            batch_size=bs,
+        )
+
+        return loss
+
+
+    # (Optional, recommended) Move grad-norm logging here so grads exist.
+    def on_after_backward(self):
+        # throttle if you like
+        if self.global_step % 10 != 0:
+            return
+
+        lp_sq, llm_sq = 0.0, 0.0
+        for name, p in self.named_parameters():
+            if p.grad is not None:
+                g = p.grad.data.norm(2).item()
+                if "latent_policy" in name:
+                    lp_sq += g * g
+                elif "llm" in name:
+                    llm_sq += g * g
+
+        # 0-d tensors on device + sync across ranks
+        self.log("train/latent_policy_grad_norm", torch.tensor(lp_sq**0.5, device=self.device), sync_dist=True)
+        self.log("train/llm_grad_norm",           torch.tensor(llm_sq**0.5, device=self.device), sync_dist=True)
 
     def forward(self, batch):
         latent_cot_config = self.model_kwargs.latent_cot_config
@@ -80,6 +351,47 @@ class LitCoLaR(LitCoTModelBase):
         answer = batch["answer"]
         batch_size = len(question)
 
+        # Detailed logging for data inspection
+        if not hasattr(self, '_batch_count'):
+            self._batch_count = 0
+        self._batch_count += 1
+
+        # Log every 10th batch and first few batches
+        should_log = (self._batch_count <= 3) or (self._batch_count % 10 == 0)
+
+        if should_log:
+            print(f"\n{'='*60}")
+            print(f"📊 BATCH {self._batch_count} ANALYSIS")
+            print(f"{'='*60}")
+            print(f"🔢 Batch size: {batch_size}")
+            print(f"🗜️  Compression factor (r): {r}")
+
+            # Sample content inspection
+            for i in range(min(2, batch_size)):  # Show first 2 samples
+                def smart_truncate(text, max_len):
+                    if len(text) <= max_len:
+                        return text
+                    half = max_len // 2 - 10
+                    return f"{text[:half]}...[TRUNCATED]...{text[-half:]}"
+
+                q_display = smart_truncate(question[i], 200)
+                s_display = smart_truncate(steps[i], 400)
+                a_display = smart_truncate(answer[i], 150)
+
+                print(f"\n📝 Sample {i+1}:")
+                print(f"   Question ({len(question[i])} chars):")
+                print(f"     {q_display}")
+                print(f"   Steps ({len(steps[i])} chars):")
+                print(f"     {s_display}")
+                print(f"   Answer ({len(answer[i])} chars):")
+                print(f"     {a_display}")
+
+            avg_q_len = sum(len(q) for q in question) // batch_size
+            avg_s_len = sum(len(s) for s in steps) // batch_size
+            avg_a_len = sum(len(a) for a in answer) // batch_size
+            print(f"\n📏 Average lengths: Q={avg_q_len}, S={avg_s_len}, A={avg_a_len}")
+            print(f"{'='*60}\n")
+
         # question: [pad, question, speed]
         auto_prob = latent_cot_config.get("replace_r_with_auto_prob", 0)
         if random.random() < auto_prob:
@@ -91,14 +403,60 @@ class LitCoLaR(LitCoTModelBase):
         )
         question_inputs_embeds = self.embedding(question_input_ids)
 
+        if should_log:
+            print(f"🔍 TOKENIZATION CHECK:")
+            print(f"   Question tokens shape: {question_input_ids.shape}")
+            # Check if any sequences hit max length (potential truncation)
+            seq_lengths = question_attention_mask.sum(dim=1)
+            max_seq_len = seq_lengths.max().item()
+            min_seq_len = seq_lengths.min().item()
+            print(f"   Question sequence lengths: min={min_seq_len}, max={max_seq_len}")
+            # Check for actual truncation - only warn if using full tokenizer max length
+            if max_seq_len >= 100000:  # Close to tokenizer's 131k limit
+                print(f"   ⚠️  WARNING: Question sequences may be approaching tokenizer limit!")
+            else:
+                print(f"   ✅ No truncation detected")
+
         # steps: [pad, ###, steps]
         steps_input_ids, steps_attention_mask = self.prepare_inputs(
             steps, padding_side="left", part="steps", prefix=self.thinking_separator
         )
+
+        if should_log:
+            steps_seq_lengths = steps_attention_mask.sum(dim=1)
+            steps_max_len = steps_seq_lengths.max().item()
+            steps_min_len = steps_seq_lengths.min().item()
+            print(f"   Steps tokens shape: {steps_input_ids.shape}")
+            print(f"   Steps sequence lengths: min={steps_min_len}, max={steps_max_len}")
+            # Check for actual truncation - only warn if using full tokenizer max length
+            if steps_max_len >= 100000:  # Close to tokenizer's 131k limit
+                print(f"   ⚠️  WARNING: Steps sequences may be approaching tokenizer limit!")
+            else:
+                print(f"   ✅ No steps truncation detected")
+
+            # Show sample tokenized inputs for first sample
+            if batch_size > 0:
+                print(f"\n🔤 TOKENIZED SAMPLE (first in batch):")
+                sample_q_tokens = question_input_ids[0][question_attention_mask[0] == 1]
+                sample_s_tokens = steps_input_ids[0][steps_attention_mask[0] == 1]
+                decoded_q = self.tokenizer.decode(sample_q_tokens, skip_special_tokens=False)
+                decoded_s = self.tokenizer.decode(sample_s_tokens, skip_special_tokens=False)
+                print(f"   Tokenized question: {smart_truncate(decoded_q, 200)}")
+                print(f"   Tokenized steps: {smart_truncate(decoded_s, 300)}")
+        # Store original steps length for compression tracking
+        original_steps_length = steps_input_ids.shape[1]
+        self._last_original_steps_length = original_steps_length
+
         if r == 1:
             steps_inputs_embeds = self.embedding(steps_input_ids)
             steps_labels = steps_input_ids
+            if should_log:
+                print(f"🚀 NO COMPRESSION (r=1): Using original steps")
+                print(f"   Steps shape: {steps_input_ids.shape}")
         else:
+            if should_log:
+                print(f"🗜️  APPLYING COMPRESSION (r={r})...")
+                print(f"   Original steps shape: {steps_input_ids.shape}")
             # better skip this else branch as it is really complex
             steps_pad_lengths = -(steps_attention_mask - 1).sum(dim=-1)
             # make sure there are $k*r - 1$ pad tokens before first token ('###'), so that the first token will be at position $k*r$
@@ -168,6 +526,13 @@ class LitCoLaR(LitCoTModelBase):
             steps_attention_mask = compressed_steps_attention_mask
             steps_labels = compressed_steps_labels
 
+            if should_log:
+                print(f"✅ COMPRESSION COMPLETE:")
+                print(f"   Original length: {padded_steps_length}")
+                print(f"   Compressed length: {compressed_steps_length}")
+                print(f"   Compression ratio: {padded_steps_length/compressed_steps_length:.2f}x")
+                print(f"   Final steps shape: {steps_inputs_embeds.shape}")
+
         # answer: [###, answer, eos, pad]
         answer_input_ids, answer_attention_mask = self.prepare_inputs(
             answer,
@@ -188,6 +553,9 @@ class LitCoLaR(LitCoTModelBase):
         labels[labels == self.tokenizer.pad_token_id] = -100
         labels[:, :question_length] = -100
 
+        # print(f"inputs_embeds: {inputs_embeds.shape}")
+        # print(f"labels: {labels.shape}")
+
         outputs = self.llm.forward(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
@@ -196,8 +564,24 @@ class LitCoLaR(LitCoTModelBase):
             output_hidden_states=True,
         )
         ce_loss = outputs.loss
+        # transformer_out = self.llm.model(
+        #     inputs_embeds=inputs_embeds,
+        #     attention_mask=attention_mask,
+        #     position_ids=position_ids,
+        #     # use_cache=False,
+        #     output_hidden_states=True,
+        # )
+        # last_hidden = transformer_out.last_hidden_state  # [B, T, D]
+
+        # 2) what you already do:
+        # steps_outputs = last_hidden[:, question_length : question_length + steps_length, :]
+
+        # 4) selected-token CE (small, safe upcast on chunks only)
+        # ce_loss = ce_on_selected_tokens(last_hidden, 
+        #     labels, self.llm.lm_head, chunk_size=512, backend="liger")
 
         # latent loss
+        # steps_outputs = transformer_out.hidden_states[-1][:, question_length : question_length + steps_length, :]
         steps_outputs = outputs.hidden_states[-1][:, question_length : question_length + steps_length, :]
         distributions = self.latent_policy.forward(steps_outputs)
         gold_embeds = inputs_embeds[:, question_length + 1 : question_length + steps_length + 1, :]
@@ -256,13 +640,45 @@ class LitCoLaR(LitCoTModelBase):
         if latent_cot_config.get("pred_embed_forward_weight", 0) != 0:
             total_loss += pred_embed_forward_loss * latent_cot_config.pred_embed_forward_weight
 
-        return {
+        # Add comprehensive logging metrics
+        log_metrics = {
             "total_loss": total_loss,
             "ce_loss": ce_loss,
             "pred_embed_forward_loss": pred_embed_forward_loss,
             "embed_modeling_loss": embed_modeling_loss,
             "entropy": entropy,
+            # Sequence length tracking
+            "question_length": question_length,
+            "steps_length": steps_length,
+            "answer_length": answer_inputs_embeds.shape[1],
+            "total_sequence_length": inputs_embeds.shape[1],
+            # Compression metrics
+            "compression_factor": r,
         }
+
+        # Add compression-specific metrics
+        if r > 1:
+            original_steps_length = getattr(self, '_last_original_steps_length', steps_length)
+            compression_ratio = original_steps_length / steps_length if steps_length > 0 else 1.0
+            log_metrics.update({
+                "original_steps_length": original_steps_length,
+                "compressed_steps_length": steps_length,
+                "actual_compression_ratio": compression_ratio,
+            })
+
+        # Latent policy statistics
+        if hasattr(self, 'latent_policy'):
+            with torch.no_grad():
+                if 'distributions' in locals():
+                    log_metrics.update({
+                        "latent_policy_mean_std": distributions.scale.mean().item(),
+                        "latent_policy_entropy": distributions.entropy().mean().item(),
+                    })
+                # Embedding norms
+                embedding_norm = torch.norm(inputs_embeds, dim=-1).mean().item()
+                log_metrics["embedding_norm"] = embedding_norm
+
+        return log_metrics
 
     # -- sft training ends --#
 
@@ -343,6 +759,9 @@ class LitCoLaR(LitCoTModelBase):
         for q in questions:
             group_questions.extend([q] * group_size)
 
+        print(f"group_questions: {group_questions}")
+        print(f"len(group_questions): {len(group_questions)}")
+
         # 1: sample
         (question_input_ids, question_attention_mask, latent_inputs_embeds, latent_attention_mask, pred_ids) = (
             self.latent_generate(
@@ -396,6 +815,10 @@ class LitCoLaR(LitCoTModelBase):
     def get_group_rewards_and_acc(
         self, pred_answers: List[str], gt_answer: str, n_latent_forward: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        print(f"pred_answers: {pred_answers}")
+        print(f"gt_answer: {gt_answer}")
+        print(f"n_latent_forward: {n_latent_forward}")
+        x = 1/0
         rl_config = self.model_kwargs.rl_config
         group_size = len(pred_answers)
 

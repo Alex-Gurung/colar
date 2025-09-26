@@ -1,0 +1,99 @@
+# UNIFIED-REFERENCE: Configuration for CoLaR with unified reference model for KL + VR-CLI
+seed: ~
+
+model:
+  target: src.models.colar_vr_cli_reward.LitCoLaRVRCLIReward
+  model_kwargs:
+    model_id: Qwen/Qwen2.5-1.5B-Instruct
+    # model_id: DeepSeek-R1-Distill-Qwen-1.5B
+    sft_method: colar
+    chat_template: False
+
+    do_lora: True
+    lora_config:
+      r: 128
+      lora_alpha: 32
+
+    latent_cot_config:
+      ce_weight: 1
+      embed_modeling_weight: 1
+      embed_modeling_loss: mse  # {nll, mse}
+      entropy_weight: 0
+      pred_embed_forward_weight: 0
+      max_compression_factor: 5
+      pred_compressed_cot: True
+      sqrt_mean: True
+
+    latent_policy_config:
+      lp_determinisitc: False
+      lp_intermediate_size: 2048
+
+    latent_generation_config:
+      max_n_latent_forward: 64
+      latent_temperature: 1.0
+      compression_factor: 5
+
+    answer_generation_config:
+      max_new_tokens: 16
+      do_sample: True
+      top_p: 0.9
+      temperature: 1.0
+
+    # UNIFIED-REFERENCE: Single reference model for both KL divergence and VR-CLI rewards
+    unified_reference_config:
+      enabled: True
+      model_name: Qwen/Qwen2.5-1.5B-Instruct  # Can be different from main model
+      device_map: cpu                          # Keep on CPU to save GPU memory
+
+      # VR-CLI reward settings
+      vr_cli_enabled: True                     # Enable VR-CLI rewards
+      target_type: correct_answer              # {correct_answer, answer_correctness, reasoning_conclusion, custom}
+      context_format: qa_format                # {simple, qa_format, conversation}
+      reward_scale: 1.0                        # Scale factor for rewards
+      reward_clip: 3.0                         # Clip rewards to [-clip, +clip]
+      use_sigmoid: True                        # Apply sigmoid to final reward
+      custom_target: ""                        # Custom target for advanced usage
+
+    # UNIFIED-REFERENCE: KL divergence configuration (matching OpenRLHF parameters)
+    kl_config:
+      enabled: True                            # Enable KL divergence penalty
+      init_kl_coef: 1e-6                      # Initial KL coefficient (matches OpenRLHF --init_kl_coef)
+      target_kl: 0.01                         # Target KL divergence value
+      adaptive: True                          # Adapt KL coefficient based on KL magnitude
+      adapt_rate: 1.1                         # Rate at which to adapt coefficient
+      min_kl_coef: 1e-8                       # Minimum KL coefficient
+      max_kl_coef: 1.0                        # Maximum KL coefficient
+
+    do_rl: False
+    rl_config:
+      average_per_token_loss: False
+      random_speed_in_group: False
+      filter_dataset: False
+      exp_batch_size: 8
+      group_size: 8                          # Matches OpenRLHF --n_samples_per_prompt
+      punish_latent_length: False
+      clip_grad_norm: 1.0
+      clip_eps: 0.2
+      use_latent_loss: True
+      use_answer_loss: True
+      n_train_samples_per_epoch: 512         # Better divisible to total_batch_size
+
+  training_kwargs:
+    optimizer:
+      target: torch.optim.AdamW
+      lr: 1e-4  # Set to 5e-7 for RL (matches OpenRLHF --actor_learning_rate)
+      weight_decay: 0.01
+    use_scheduler: False
+    scheduler:
+      target: constant_schedule_with_warmup
+      warmup_steps: 1000
+
+trainer:
+  max_epochs: 1  # Matches OpenRLHF --max_epochs
+
+dataloader:
+  batch_size: 64  # Matches OpenRLHF --train_batch_size / --rollout_batch_size
+  val_batch_size: 32
+  num_workers: 8
+  pin_memory: True
+  persistent_workers: True

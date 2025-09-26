@@ -1,0 +1,5 @@
+data_module:
+  target: src.datasets.converted_sft.ConvertedSFTDataModule
+  dataset_name: converted_sft
+  tiny_dataset: False
+  epoch_scaling: 1

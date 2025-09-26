@@ -3,15 +3,19 @@ seed: ~
 model:
   target: src.models.colar.LitCoLaR
   model_kwargs:
-    model_id: Llama-3.2-1B-Instruct
+    # model_id: Llama-3.2-1B-Instruct
+    model_id: Qwen/Qwen2.5-7B-Instruct
     # model_id: DeepSeek-R1-Distill-Qwen-1.5B
     sft_method: colar
     chat_template: False
 
-    do_lora: True
-    lora_config:
-      r: 128
-      lora_alpha: 32
+    do_lora: False 
+    # lora_config:
+      # do_lora: True
+      # lora_config:
+      # r: 128
+      # lora_alpha: 32
+
 
     latent_cot_config:
       ce_weight: 1
@@ -25,7 +29,8 @@ model:
     
     latent_policy_config:
       lp_determinisitc: False
-      lp_intermediate_size: 2048
+      # lp_intermediate_size: 2048
+      lp_intermediate_size: 3584
 
     latent_generation_config:
       max_n_latent_forward: 64
@@ -33,41 +38,85 @@ model:
       compression_factor: 5
     
     answer_generation_config:
-      max_new_tokens: 16
+      max_new_tokens: 2048
       do_sample: True
       top_p: 0.9
       temperature: 1.0
 
-    do_rl: False
+    # do_rl: False
+    do_rl: True
     rl_config:
       average_per_token_loss: False
       random_speed_in_group: False
       filter_dataset: False
-      exp_batch_size: 8
-      group_size: 8
       punish_latent_length: False
       clip_grad_norm: 1.0
       clip_eps: 0.2
       use_latent_loss: True
-      use_answer_loss: True
-      n_train_samples_per_epoch: 512  # better divisible to total_batch_size
+      # use_answer_loss: True
+      use_answer_loss: False
+      # n_train_samples_per_epoch: 512  # better divisible to total_batch_size
+      # exp_batch_size: 8
+      # group_size: 8
+      # n_train_samples_per_epoch: 640
+
+      exp_batch_size: 60
+      group_size: 6
+      n_train_samples_per_epoch: 600
 
   training_kwargs:
     optimizer:
       target: torch.optim.AdamW
-      lr: 1e-4  # set to 1e-6 for rl
+      # target: deepspeed.ops.adam.DeepSpeedCPUAdam 
+      # lr: 1e-4  # set to 1e-6 for rl, this for sft
+      lr: 5e-7
       weight_decay: 0.01
-    use_scheduler: False
+      # gradient_clipping: 1.0
+    # use_scheduler: False
+    # scheduler:
+    #   target: constant_schedule_with_warmup
+    #   warmup_steps: 1000
+    use_scheduler: True
     scheduler:
-      target: constant_schedule_with_warmup
-      warmup_steps: 1000
+      target: cosine_with_min_lr
+      # warmup_ratio: 0.1
+      # warmup_steps: 272 (SFT)
+      warmup_steps: 5440 # 272 * 20 = 5440 (RL)
+      lr_scheduler_kwargs:
+        min_lr_rate: 0.1
 
 trainer:
-  max_epochs: 50
+  precision: bf16-mixed
+  # max_epochs: 5
+  # max_epochs: 2
+  max_epochs: 1
+  # accumulate_grad_batches: 16 # with 8 gpus
+  # accumulate_grad_batches: 32 # 32 acc * 4 gpu * 1 batch size = 128
+  # accumulate_grad_batches: 8
+  accumulate_grad_batches: 1 # needed for RL
+  # strategy: deepspeed_stage_2_offload
+  # strategy: deepspeed_stage_2
+  strategy: ddp
+    # class_path: lightning.pytorch.strategies.FSDPStrategy
+    # init_args:
+    #   state_dict_type: sharded_state_dict
+    #   activation_checkpointing_impl: NO_REENTRANT
+    #   activation_checkpointing_policy:
+    #     - transformers.models.qwen2.modeling_qwen2.Qwen2DecoderLayer
+    #   auto_wrap_policy: transformer_auto_wrap_policy
+    #   transformer_layer_cls:
+    #     - transformers.models.qwen2.modeling_qwen2.Qwen2DecoderLayer
 
 dataloader:
-  batch_size: 256
-  val_batch_size: 32
-  num_workers: 8
+  # batch_size: 8  # 1 per GPU with 8 GPUs
+  # val_batch_size: 8  # 1 per GPU for validation
+  # batch_size: 6  # 1 per GPU with 8 GPUs
+  # val_batch_size: 6  # 1 per GPU for validation
+  # batch_size: 4  # 1 per GPU with 8 GPUs
+  # val_batch_size: 4  # 1 per GPU for validation
+  batch_size: 4  # 4 per GPU with 4 GPUs
+  val_batch_size: 4  # 4 per GPU for validation
+  num_workers: 64
   pin_memory: True
   persistent_workers: True
+  drop_last: True
