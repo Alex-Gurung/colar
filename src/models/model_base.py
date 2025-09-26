@@ -62,7 +62,7 @@ Question: {} Let's think step by step:
             self.question_template = "Question: {} Let's think step by step:"
         self.speed_template = "(Thinking speed: {})"
         # self.thinking_separator = "###"
-        self.thinking_separator = " "
+        self.thinking_separator = "\n"
         self.thinking_separator_id = self.tokenizer.convert_tokens_to_ids(self.thinking_separator)
         self.steps_template = "{}"
         self.answer_template = "Answer:{}"
@@ -252,7 +252,7 @@ Question: {} Let's think step by step:
 
         # base_template = getattr(self, f"{part}_template")
         # text_list = [prefix[i] + base_template.format(text) + suffix[i] for i, text in enumerate(text_list)]
-        text_list = [prefix[i] + text + suffix[i] for i, text in enumerate(text_list)]
+        text_list = [prefix[i] + text + "\n" + suffix[i] for i, text in enumerate(text_list)]
         # print(f"text_list:")
         # for text in text_list:
         #     print(text)

@@ -455,7 +455,7 @@ def main():
 
     # test after training
     if args.do_test:
-        print(do_test(model=model, trainer=trainer, ckpt_path="best", data_module=data_module, args=args))
+        print(do_test(model=model, trainer=trainer, ckpt_path="last", data_module=data_module, args=args))
 
 
 if __name__ == "__main__":
