@@ -31,7 +31,7 @@ start_time = get_timestamp()
 #     logger.info(model.load_state_dict(state_dict=state_dict, strict=False))
 def do_test(model: pl.LightningModule, trainer: pl.Trainer, ckpt_path: str, data_module: pl.LightningDataModule, args):
     results = defaultdict(list)
-
+    print(f"data_module", data_module)
     # Load weights first (supports DS/PL dir, HF shards dir, or Lightning .ckpt)
     # if ckpt_path in ("best", "last"):
     #     # Keep original behavior for trainer-managed checkpoints

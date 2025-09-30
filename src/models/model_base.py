@@ -63,7 +63,8 @@ Question: {} Let's think step by step:
         self.speed_template = "(Thinking speed: {})"
         # self.thinking_separator = "###"
         self.thinking_separator = "\n"
-        self.thinking_separator_id = self.tokenizer.convert_tokens_to_ids(self.thinking_separator)
+        # self.thinking_separator_id = self.tokenizer.convert_tokens_to_ids(self.thinking_separator)
+        self.thinking_separator_id = self.tokenizer.encode(self.thinking_separator)[0]
         self.steps_template = "{}"
         self.answer_template = "Answer:{}"
 
@@ -81,7 +82,10 @@ Question: {} Let's think step by step:
         # )
 
         # model_class = AutoModelForCausalLM
-        self.llm = model_class.from_pretrained(llm_path, attn_implementation="flash_attention_2", trust_remote_code=True, dtype=torch.bfloat16)
+        self.llm = model_class.from_pretrained(llm_path, 
+            attn_implementation="flash_attention_3", 
+            trust_remote_code=True, 
+            dtype=torch.bfloat16)
 
         if not model_kwargs.get("set_pad_as_last_token", False):  # not used, but might help
             self.llm.resize_token_embeddings(len(self.tokenizer))
@@ -109,9 +113,9 @@ Question: {} Let's think step by step:
                 self.trainable_parameter_names.append(name)
                 trainable_params.append(param)
 
-        optimizer = instantiate_from_config(kwargs.optimizer, extra_kwargs={"params": trainable_params})
+        # optimizer = instantiate_from_config(kwargs.optimizer, extra_kwargs={"params": trainable_params})
         # optimizer = instantiate_from_config(kwargs.optimizer, trainable_params)
-        # optimizer = DeepSpeedCPUAdam(trainable_params, lr=kwargs.optimizer.lr, weight_decay=kwargs.optimizer.weight_decay)
+        optimizer = DeepSpeedCPUAdam(trainable_params, lr=kwargs.optimizer.lr, weight_decay=kwargs.optimizer.weight_decay)
 
         if not kwargs.get("use_scheduler", False):
             return {"optimizer": optimizer}

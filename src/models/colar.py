@@ -815,10 +815,13 @@ class LitCoLaR(LitCoTModelBase):
     def get_group_rewards_and_acc(
         self, pred_answers: List[str], gt_answer: str, n_latent_forward: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        print(f"pred_answers: {pred_answers}")
-        print(f"gt_answer: {gt_answer}")
-        print(f"n_latent_forward: {n_latent_forward}")
-        x = 1/0
+        # print(f"pred_answers: {pred_answers}")
+        # print(f"gt_answer: {gt_answer}")
+        # print(f"n_latent_forward: {n_latent_forward}")
+        # import jsonlines
+        # with jsonlines.open("/mnt/disk/baseline_colar/pred_answers.txt", "w") as writer:
+        #     writer.write_all(pred_answers)
+        # x = 1/0
         rl_config = self.model_kwargs.rl_config
         group_size = len(pred_answers)
 
