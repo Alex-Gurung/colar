@@ -92,6 +92,9 @@ class ConvertedSFTDataModule(pl.LightningDataModule):
             print("="*80 + "\n")
 
         elif stage == "test":
+            train_data = load_split("train")
+            self.train_set = self._create_dataset(train_data, "train")
+
             test_data = load_split("test")
             self.test_set = self._create_dataset(test_data, "test")
 
