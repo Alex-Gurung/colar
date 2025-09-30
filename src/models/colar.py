@@ -770,6 +770,7 @@ class LitCoLaR(LitCoTModelBase):
             )
         )
         pred_answer_strings = self.tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
+        question_strings = self.tokenizer.batch_decode(question_input_ids, skip_special_tokens=True)
 
         # 2: calculate rewards
         n_latent_forward = latent_attention_mask.sum(dim=1)
@@ -779,9 +780,10 @@ class LitCoLaR(LitCoTModelBase):
         for sample_idx in range(batch_size):
             group_answers = pred_answer_strings[sample_idx * group_size : (sample_idx + 1) * group_size]
             group_n_latent_forward = n_latent_forward[sample_idx * group_size : (sample_idx + 1) * group_size]
+            group_question_strings = question_strings[sample_idx * group_size : (sample_idx + 1) * group_size]
             gt_answer = gt_answers[sample_idx]
             rewards, accuracies = self.get_group_rewards_and_acc(
-                pred_answers=group_answers, gt_answer=gt_answer, n_latent_forward=group_n_latent_forward
+                pred_answers=group_answers, gt_answer=gt_answer, n_latent_forward=group_n_latent_forward, question_strings=group_question_strings
             )
             advantages = grpo.group_advantages(rewards)
             all_rewards.append(rewards)
@@ -813,23 +815,30 @@ class LitCoLaR(LitCoTModelBase):
         return experience
 
     def get_group_rewards_and_acc(
-        self, pred_answers: List[str], gt_answer: str, n_latent_forward: torch.Tensor
+        self, pred_answers: List[str], gt_answer: str, n_latent_forward: torch.Tensor, question_strings: List[str]=None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        print(f"question_strings: {question_strings}")
         print(f"pred_answers: {pred_answers}")
         print(f"gt_answer: {gt_answer}")
         print(f"n_latent_forward: {n_latent_forward}")
-        x = 1/0
+        
         rl_config = self.model_kwargs.rl_config
         group_size = len(pred_answers)
 
         accuracies = torch.zeros(size=(group_size, 1), device=self.device, dtype=torch.float32)
         for i, pred_answer in enumerate(pred_answers):
-            pred_a = self.extract_answer_from_output(pred_answer)
-            accuracies[i] = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
+            # pred_a = self.extract_answer_from_output(pred_answer)
+            # accuracies[i] = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
+            model_response = pred_answer.split("In summary:")[-1].strip()
+            model_response = model_response.split("In summary,")[-1].strip()
+            model_response = model_response.split("Detailed Plan:")[-1].strip()
+            question_string = question_strings[i]
+            # accuracies[i] = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
 
         rewards = accuracies.detach().clone()
         if rl_config.punish_latent_length:
             rewards /= n_latent_forward.unsqueeze(1)
+        x = 1/0
 
         return rewards, accuracies
 
