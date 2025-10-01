@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import torch
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
+from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
 from .model_base import LitCoTModelBase
 from ..modules.projector import LatentPolicy
@@ -20,6 +21,10 @@ try:
 except Exception:
     _HAS_LIGER = False
     _FUSED_CE_SUM = None
+
+
+with open("/mnt/disk/new_nrl_ncp/prompt_to_datapoint_with_baseline_ppl_qwen7B_cpu_new.pkl", "rb") as f:
+    prompt_to_datapoint_with_baseline_ppl = pickle.load(f)
 
 def ce_on_selected_tokens(
     last_hidden: torch.Tensor,     # [B, T, D]
@@ -94,6 +99,12 @@ class LitCoLaR(LitCoTModelBase):
 
         if model_kwargs.do_rl:
             self.init_rl()
+
+        model_class = AutoLigerKernelForCausalLM
+        self.baseline_llm = model_class.from_pretrained(model_kwargs.model_id, 
+            attn_implementation="flash_attention_3", 
+            trust_remote_code=True, 
+            dtype=torch.bfloat16, device_map="auto")
 
         # self.fused_ce_sum = LigerFusedLinearCrossEntropyLoss(reduction="sum")
 
@@ -821,7 +832,9 @@ class LitCoLaR(LitCoTModelBase):
         print(f"pred_answers: {pred_answers}")
         print(f"gt_answer: {gt_answer}")
         print(f"n_latent_forward: {n_latent_forward}")
-        
+        unique_question_strings = list(set(question_strings))
+        print(f"number of unique question strings: {len(unique_question_strings)}")
+
         rl_config = self.model_kwargs.rl_config
         group_size = len(pred_answers)
 
