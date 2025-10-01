@@ -887,10 +887,9 @@ class LitCoLaR(LitCoTModelBase):
         print(f"answer_length: {answer_length}")
         print(f"e.n_latent_forward.shape: {e.n_latent_forward.shape}")
         # instead of all at once, let's do it one by one
-        all_latent_logprobs = None
-        all_answer_logprobs = None
-        all_logits_for_eol = []
+        all_last_hidden_states = []
         all_answer_logits = []
+        all_output_logits = []
         for i in range(all_inputs_embeds.shape[0]):
             inputs_embeds = all_inputs_embeds[i, :, :].unsqueeze(0)
             attention_mask = all_attention_mask[i, :].unsqueeze(0)
@@ -912,35 +911,38 @@ class LitCoLaR(LitCoTModelBase):
             last_hidden_states_for_latents = all_outputs.hidden_states[-1][
                 :, question_length - 1 : question_length + latent_length - 1
             ]
-            distributions = self.latent_policy.forward(last_hidden_states_for_latents)
-            latent_logprobs = distributions.log_prob(e.latent_inputs_embeds / self.embeds_std).mean(dim=-1)
 
-            # logits for end of think
-            # logits_for_eol = []
-            # for b, latent_length in enumerate(e.n_latent_forward):
-            all_logits_for_eol.append(all_outputs.logits[:, question_length + latent_length - 1])
-            # logits_for_eol = torch.stack(logits_for_eol, dim=0)
-            # answer_logprobs
+            all_last_hidden_states.append(last_hidden_states_for_latents)
+            all_output_logits.append(all_outputs.logits)
             answer_logits = all_outputs.logits[:, -answer_length:-1, :]
             all_answer_logits.append(answer_logits)
+            
+            print(f"last_hidden_states_for_latents.shape: {last_hidden_states_for_latents.shape}")
+            print(f"output_logits.shape: {all_output_logits.shape}")
+            print(f"answer_logits.shape: {all_answer_logits.shape}")
 
-            if all_latent_logprobs is None:
-                all_latent_logprobs = latent_logprobs
-            else:
-                all_latent_logprobs = torch.cat([all_latent_logprobs, latent_logprobs], dim=0)
+        all_last_hidden_states = torch.stack(all_last_hidden_states, dim=0)
+        all_output_logits = torch.stack(all_output_logits, dim=0)
+        all_answer_logits = torch.stack(all_answer_logits, dim=0)
+        print(f"all_last_hidden_states.shape: {all_last_hidden_states.shape}")
+        print(f"all_output_logits.shape: {all_output_logits.shape}")
+        print(f"all_answer_logits.shape: {all_answer_logits.shape}")
 
-        logits_for_eol = torch.stack(all_logits_for_eol, dim=0)
-        answer_logits = torch.cat(all_answer_logits, dim=0)
-        print(f"logits_for_eol.shape: {logits_for_eol.shape}")
-        print(f"answer_logits.shape: {answer_logits.shape}")
-        print(f"all_latent_logprobs.shape: {all_latent_logprobs.shape}")
-        answer_logits = torch.cat([logits_for_eol, answer_logits], dim=1)
+        distributions = self.latent_policy.forward(all_last_hidden_states)
+        latent_logprobs = distributions.log_prob(e.latent_inputs_embeds / self.embeds_std).mean(dim=-1)
+
+        # logits for end of think
+        logits_for_eol = []
+        for b, latent_length in enumerate(e.n_latent_forward):
+            logits_for_eol.append(all_output_logits[b, question_length + latent_length - 1])
+        logits_for_eol = torch.stack(logits_for_eol, dim=0)
+        # answer_logprobs
+        answer_logits = torch.cat([logits_for_eol, all_answer_logits], dim=1)
         answer_logprobs = F.log_softmax(answer_logits, dim=-1)
         answer_logprobs = answer_logprobs.gather(dim=-1, index=e.answer_input_ids.unsqueeze(-1)).squeeze(-1)
-        print(f"final answer_logprobs.shape: {answer_logprobs.shape}")
-        
-
+        print(f"latent_logprobs.shape: {latent_logprobs.shape}")
+        print(f"answer_logprobs.shape: {answer_logprobs.shape}")
         # return latent_logprobs, answer_logprobs
-        return all_latent_logprobs, answer_logprobs
+        return latent_logprobs, answer_logprobs
 
     # -- rl ends --#
