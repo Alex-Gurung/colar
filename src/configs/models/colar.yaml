@@ -62,7 +62,7 @@ model:
 
       exp_batch_size: 8
       group_size: 8
-      n_train_samples_per_epoch: 64
+      n_train_samples_per_epoch: 256
 
   training_kwargs:
     optimizer:
