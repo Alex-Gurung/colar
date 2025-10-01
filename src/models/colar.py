@@ -885,19 +885,21 @@ class LitCoLaR(LitCoTModelBase):
         print(f"question_length: {question_length}")
         print(f"latent_length: {latent_length}")
         print(f"answer_length: {answer_length}")
+        print(f"e.n_latent_forward.shape: {e.n_latent_forward.shape}")
         # instead of all at once, let's do it one by one
         all_latent_logprobs = None
         all_answer_logprobs = None
-        for b in range(all_inputs_embeds.shape[0]):
-            inputs_embeds = all_inputs_embeds[b, :, :].unsqueeze(0)
-            attention_mask = all_attention_mask[b, :].unsqueeze(0)
-            position_ids = all_position_ids[b, :].unsqueeze(0)
+        for i in range(all_inputs_embeds.shape[0]):
+            inputs_embeds = all_inputs_embeds[i, :, :].unsqueeze(0)
+            attention_mask = all_attention_mask[i, :].unsqueeze(0)
+            position_ids = all_position_ids[i, :].unsqueeze(0)
             all_outputs = self.llm.forward(
                 inputs_embeds=inputs_embeds,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
                 output_hidden_states=True,
             )
+            print(f"all_outputs.logits.shape: {all_outputs.logits.shape}")
             
         # all_outputs = self.llm.forward(
         #     inputs_embeds=all_inputs_embeds,
