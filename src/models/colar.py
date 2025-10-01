@@ -918,8 +918,8 @@ class LitCoLaR(LitCoTModelBase):
             all_answer_logits.append(answer_logits)
             
             print(f"last_hidden_states_for_latents.shape: {last_hidden_states_for_latents.shape}")
-            print(f"output_logits.shape: {all_output_logits.shape}")
-            print(f"answer_logits.shape: {all_answer_logits.shape}")
+            print(f"output_logits.shape: {all_outputs.logits.shape}")
+            print(f"answer_logits.shape: {answer_logits.shape}")
 
         all_last_hidden_states = torch.stack(all_last_hidden_states, dim=0)
         all_output_logits = torch.stack(all_output_logits, dim=0)
