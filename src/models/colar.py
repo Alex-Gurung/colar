@@ -879,6 +879,12 @@ class LitCoLaR(LitCoTModelBase):
         )
 
         all_position_ids = get_position_ids_from_attention_mask(all_attention_mask)
+        print(f"all_inputs_embeds.shape: {all_inputs_embeds.shape}")
+        print(f"all_attention_mask.shape: {all_attention_mask.shape}")
+        print(f"all_position_ids.shape: {all_position_ids.shape}")
+        print(f"question_length: {question_length}")
+        print(f"latent_length: {latent_length}")
+        print(f"answer_length: {answer_length}")
 
         all_outputs = self.llm.forward(
             inputs_embeds=all_inputs_embeds,
