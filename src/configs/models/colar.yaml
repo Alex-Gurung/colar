@@ -60,7 +60,7 @@ model:
       # group_size: 8
       # n_train_samples_per_epoch: 640
 
-      exp_batch_size: 64
+      exp_batch_size: 8
       group_size: 8
       n_train_samples_per_epoch: 512
 

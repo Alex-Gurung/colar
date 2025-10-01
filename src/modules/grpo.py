@@ -97,6 +97,8 @@ def split_experience_batch(experience: Experience) -> list[Experience]:
             vals = [None] * batch_size
         else:
             vals = torch.unbind(value)
+        print(f"len(vals): {len(vals)}")
+        print(f"batch_size: {batch_size}")
         assert batch_size == len(vals)
         for i, v in enumerate(vals):
             batch_data[i][key] = v
