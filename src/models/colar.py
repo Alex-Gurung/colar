@@ -889,6 +889,8 @@ class LitCoLaR(LitCoTModelBase):
         # instead of all at once, let's do it one by one
         all_latent_logprobs = None
         all_answer_logprobs = None
+        all_logits_for_eol = []
+        all_answer_logits = []
         for i in range(all_inputs_embeds.shape[0]):
             inputs_embeds = all_inputs_embeds[i, :, :].unsqueeze(0)
             attention_mask = all_attention_mask[i, :].unsqueeze(0)
@@ -914,22 +916,30 @@ class LitCoLaR(LitCoTModelBase):
             latent_logprobs = distributions.log_prob(e.latent_inputs_embeds / self.embeds_std).mean(dim=-1)
 
             # logits for end of think
-            logits_for_eol = []
-            for b, latent_length in enumerate(e.n_latent_forward):
-                logits_for_eol.append(all_outputs.logits[b, question_length + latent_length - 1])
-            logits_for_eol = torch.stack(logits_for_eol, dim=0)
+            # logits_for_eol = []
+            # for b, latent_length in enumerate(e.n_latent_forward):
+            logits_for_eol.append(all_outputs.logits[0, question_length + latent_length - 1])
+            # logits_for_eol = torch.stack(logits_for_eol, dim=0)
             # answer_logprobs
-            answer_logits = torch.cat([logits_for_eol, all_outputs.logits[:, -answer_length:-1, :]], dim=1)
-            answer_logprobs = F.log_softmax(answer_logits, dim=-1)
-            answer_logprobs = answer_logprobs.gather(dim=-1, index=e.answer_input_ids.unsqueeze(-1)).squeeze(-1)
+            answer_logits = all_outputs.logits[:, -answer_length:-1, :]
+            all_answer_logits.append(answer_logits)
+
             if all_latent_logprobs is None:
                 all_latent_logprobs = latent_logprobs
-                all_answer_logprobs = answer_logprobs
             else:
                 all_latent_logprobs = torch.cat([all_latent_logprobs, latent_logprobs], dim=0)
-                all_answer_logprobs = torch.cat([all_answer_logprobs, answer_logprobs], dim=0)
+
+        logits_for_eol = torch.stack(logits_for_eol, dim=0)
+        answer_logits = torch.cat(all_answer_logits, dim=0)
+        print(f"logits_for_eol.shape: {logits_for_eol.shape}")
+        print(f"answer_logits.shape: {answer_logits.shape}")
+        print(f"all_latent_logprobs.shape: {all_latent_logprobs.shape}")
+        answer_logits = torch.cat([logits_for_eol, answer_logits], dim=1)
+        answer_logprobs = F.log_softmax(answer_logits, dim=-1)
+        answer_logprobs = answer_logprobs.gather(dim=-1, index=e.answer_input_ids.unsqueeze(-1)).squeeze(-1)
+        
 
         # return latent_logprobs, answer_logprobs
-        return all_latent_logprobs, all_answer_logprobs
+        return all_latent_logprobs, answer_logprobs
 
     # -- rl ends --#
