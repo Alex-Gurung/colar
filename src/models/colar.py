@@ -801,7 +801,12 @@ class LitCoLaR(LitCoTModelBase):
             all_rewards.append(rewards)
             all_accuracies.append(accuracies)
             all_advantages.append(advantages)
-
+        print(f"len(all_rewards): {len(all_rewards)}")
+        print(f"len(all_accuracies): {len(all_accuracies)}")
+        print(f"len(all_advantages): {len(all_advantages)}")
+        print(f"group_size: {group_size}")
+        print(f"batch_size: {batch_size}")
+    
         rewards = torch.cat(all_rewards, dim=0)
         accuracies = torch.cat(all_accuracies, dim=0)
         advantages = torch.cat(all_advantages, dim=0)
