@@ -921,9 +921,9 @@ class LitCoLaR(LitCoTModelBase):
             print(f"output_logits.shape: {all_outputs.logits.shape}")
             print(f"answer_logits.shape: {answer_logits.shape}")
 
-        all_last_hidden_states = torch.stack(all_last_hidden_states, dim=0)
-        all_output_logits = torch.stack(all_output_logits, dim=0)
-        all_answer_logits = torch.stack(all_answer_logits, dim=0)
+        all_last_hidden_states = torch.cat(all_last_hidden_states, dim=0)
+        all_output_logits = torch.cat(all_output_logits, dim=0)
+        all_answer_logits = torch.cat(all_answer_logits, dim=0)
         print(f"all_last_hidden_states.shape: {all_last_hidden_states.shape}")
         print(f"all_output_logits.shape: {all_output_logits.shape}")
         print(f"all_answer_logits.shape: {all_answer_logits.shape}")
@@ -936,6 +936,8 @@ class LitCoLaR(LitCoTModelBase):
         for b, latent_length in enumerate(e.n_latent_forward):
             logits_for_eol.append(all_output_logits[b, question_length + latent_length - 1])
         logits_for_eol = torch.stack(logits_for_eol, dim=0)
+        print(f"logits_for_eol.shape: {logits_for_eol.shape}")
+        print(f"all_answer_logits.shape: {all_answer_logits.shape}")
         # answer_logprobs
         answer_logits = torch.cat([logits_for_eol, all_answer_logits], dim=1)
         answer_logprobs = F.log_softmax(answer_logits, dim=-1)
