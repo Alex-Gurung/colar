@@ -852,9 +852,9 @@ class LitCoLaR(LitCoTModelBase):
             question_string = question_strings[i]
             # accuracies[i] = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
 
-        # rewards = accuracies.detach().clone()
-        # if rl_config.punish_latent_length:
-        #     rewards /= n_latent_forward.unsqueeze(1)
+        rewards = accuracies.detach().clone()
+        if rl_config.punish_latent_length:
+            rewards /= n_latent_forward.unsqueeze(1)
 
         # x = 1/0
 
