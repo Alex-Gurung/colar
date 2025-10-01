@@ -918,7 +918,7 @@ class LitCoLaR(LitCoTModelBase):
             # logits for end of think
             # logits_for_eol = []
             # for b, latent_length in enumerate(e.n_latent_forward):
-            all_logits_for_eol.append(all_outputs.logits[0, question_length + latent_length - 1])
+            all_logits_for_eol.append(all_outputs.logits[:, question_length + latent_length - 1])
             # logits_for_eol = torch.stack(logits_for_eol, dim=0)
             # answer_logprobs
             answer_logits = all_outputs.logits[:, -answer_length:-1, :]
