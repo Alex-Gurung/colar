@@ -22,6 +22,7 @@ except Exception:
     _HAS_LIGER = False
     _FUSED_CE_SUM = None
 
+import pickle
 
 with open("/mnt/disk/new_nrl_ncp/prompt_to_datapoint_with_baseline_ppl_qwen7B_cpu_new.pkl", "rb") as f:
     prompt_to_datapoint_with_baseline_ppl = pickle.load(f)
