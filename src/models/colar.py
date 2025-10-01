@@ -835,6 +835,9 @@ class LitCoLaR(LitCoTModelBase):
         print(f"n_latent_forward: {n_latent_forward}")
         unique_question_strings = list(set(question_strings))
         print(f"number of unique question strings: {len(unique_question_strings)}")
+        num_unique_question_strings = len(unique_question_strings)
+        if num_unique_question_strings > 1:
+            x = 1/0
 
         rl_config = self.model_kwargs.rl_config
         group_size = len(pred_answers)
@@ -849,10 +852,11 @@ class LitCoLaR(LitCoTModelBase):
             question_string = question_strings[i]
             # accuracies[i] = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
 
-        rewards = accuracies.detach().clone()
-        if rl_config.punish_latent_length:
-            rewards /= n_latent_forward.unsqueeze(1)
-        x = 1/0
+        # rewards = accuracies.detach().clone()
+        # if rl_config.punish_latent_length:
+        #     rewards /= n_latent_forward.unsqueeze(1)
+
+        # x = 1/0
 
         return rewards, accuracies
 
