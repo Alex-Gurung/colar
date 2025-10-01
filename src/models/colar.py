@@ -101,11 +101,11 @@ class LitCoLaR(LitCoTModelBase):
         if model_kwargs.do_rl:
             self.init_rl()
 
-        model_class = AutoLigerKernelForCausalLM
-        self.baseline_llm = model_class.from_pretrained(model_kwargs.model_id, 
-            attn_implementation="flash_attention_3", 
-            trust_remote_code=True, 
-            dtype=torch.bfloat16, device_map="auto")
+        # model_class = AutoLigerKernelForCausalLM
+        # self.baseline_llm = model_class.from_pretrained(model_kwargs.model_id, 
+        #     attn_implementation="flash_attention_3", 
+        #     trust_remote_code=True, 
+        #     dtype=torch.bfloat16, device_map="auto")
 
         # self.fused_ce_sum = LigerFusedLinearCrossEntropyLoss(reduction="sum")
 
