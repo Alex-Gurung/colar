@@ -937,6 +937,7 @@ class LitCoLaR(LitCoTModelBase):
         answer_logits = torch.cat([logits_for_eol, answer_logits], dim=1)
         answer_logprobs = F.log_softmax(answer_logits, dim=-1)
         answer_logprobs = answer_logprobs.gather(dim=-1, index=e.answer_input_ids.unsqueeze(-1)).squeeze(-1)
+        print(f"final answer_logprobs.shape: {answer_logprobs.shape}")
         
 
         # return latent_logprobs, answer_logprobs
