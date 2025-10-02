@@ -973,6 +973,12 @@ class LitCoLaR(LitCoTModelBase):
         ans_targets    = []   # same length as ans_hiddens (flattened targets)
         # Note: we do not store any logits tensors
 
+        base = getattr(self.llm, "model", getattr(self.llm, "transformer", None))
+        if base is None:
+            raise RuntimeError("Could not find base model submodule (tried .model and .transformer)")
+
+
+
         # Per-sample forward to keep activation memory low
         for i in range(B):
             inputs_embeds = torch.cat([
@@ -990,7 +996,8 @@ class LitCoLaR(LitCoTModelBase):
             pos_ids = get_position_ids_from_attention_mask(attn_mask)
 
             # Only last_hidden_state; avoids huge hidden_states list + logits
-            out = self.llm.forward(
+            # out = self.llm.forward(
+            out = base.forward(
                 inputs_embeds=inputs_embeds,
                 attention_mask=attn_mask,
                 position_ids=pos_ids,
