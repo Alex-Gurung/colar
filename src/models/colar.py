@@ -866,91 +866,206 @@ class LitCoLaR(LitCoTModelBase):
 
         return rewards, accuracies
 
-    def get_logprobs(self, e: grpo.Experience):
-        question_length = e.question_input_ids.shape[1]
-        latent_length = e.latent_inputs_embeds.shape[1]
-        answer_length = e.answer_input_ids.shape[1]
+    # def get_logprobs(self, e: grpo.Experience):
+    #     question_length = e.question_input_ids.shape[1]
+    #     latent_length = e.latent_inputs_embeds.shape[1]
+    #     answer_length = e.answer_input_ids.shape[1]
 
-        question_inputs_embeds = self.embedding(e.question_input_ids)
-        answer_inputs_embeds = self.embedding(e.answer_input_ids)
+    #     question_inputs_embeds = self.embedding(e.question_input_ids)
+    #     answer_inputs_embeds = self.embedding(e.answer_input_ids)
 
-        all_inputs_embeds = torch.cat([question_inputs_embeds, e.latent_inputs_embeds, answer_inputs_embeds], dim=1)
-        all_attention_mask = torch.cat(
-            [e.question_attention_mask, e.latent_attention_mask, e.answer_attention_mask], dim=1
-        )
+    #     all_inputs_embeds = torch.cat([question_inputs_embeds, e.latent_inputs_embeds, answer_inputs_embeds], dim=1)
+    #     all_attention_mask = torch.cat(
+    #         [e.question_attention_mask, e.latent_attention_mask, e.answer_attention_mask], dim=1
+    #     )
 
-        all_position_ids = get_position_ids_from_attention_mask(all_attention_mask)
-        print(f"all_inputs_embeds.shape: {all_inputs_embeds.shape}")
-        print(f"all_attention_mask.shape: {all_attention_mask.shape}")
-        print(f"all_position_ids.shape: {all_position_ids.shape}")
-        print(f"question_length: {question_length}")
-        print(f"latent_length: {latent_length}")
-        print(f"answer_length: {answer_length}")
-        print(f"e.n_latent_forward.shape: {e.n_latent_forward.shape}")
-        # instead of all at once, let's do it one by one
-        all_last_hidden_states = []
-        all_answer_logits = []
-        all_output_logits = []
-        for i in range(all_inputs_embeds.shape[0]):
-            inputs_embeds = all_inputs_embeds[i, :, :].unsqueeze(0)
-            attention_mask = all_attention_mask[i, :].unsqueeze(0)
-            position_ids = all_position_ids[i, :].unsqueeze(0)
-            print(f"{i}; inputs_embeds.shape: {inputs_embeds.shape}")
-            print(f"{i}; attention_mask.shape: {attention_mask.shape}")
-            print(f"{i}; position_ids.shape: {position_ids.shape}")
-            all_outputs = self.llm.forward(
-                inputs_embeds=inputs_embeds,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                # output_hidden_states=True,
-                output_hidden_states=False,
-            )
-            print(f"{i}; all_outputs.logits.shape: {all_outputs.logits.shape}")
+    #     all_position_ids = get_position_ids_from_attention_mask(all_attention_mask)
+    #     print(f"all_inputs_embeds.shape: {all_inputs_embeds.shape}")
+    #     print(f"all_attention_mask.shape: {all_attention_mask.shape}")
+    #     print(f"all_position_ids.shape: {all_position_ids.shape}")
+    #     print(f"question_length: {question_length}")
+    #     print(f"latent_length: {latent_length}")
+    #     print(f"answer_length: {answer_length}")
+    #     print(f"e.n_latent_forward.shape: {e.n_latent_forward.shape}")
+    #     # instead of all at once, let's do it one by one
+    #     all_last_hidden_states = []
+    #     all_answer_logits = []
+    #     all_output_logits = []
+    #     for i in range(all_inputs_embeds.shape[0]):
+    #         inputs_embeds = all_inputs_embeds[i, :, :].unsqueeze(0)
+    #         attention_mask = all_attention_mask[i, :].unsqueeze(0)
+    #         position_ids = all_position_ids[i, :].unsqueeze(0)
+    #         print(f"{i}; inputs_embeds.shape: {inputs_embeds.shape}")
+    #         print(f"{i}; attention_mask.shape: {attention_mask.shape}")
+    #         print(f"{i}; position_ids.shape: {position_ids.shape}")
+    #         all_outputs = self.llm.forward(
+    #             inputs_embeds=inputs_embeds,
+    #             attention_mask=attention_mask,
+    #             position_ids=position_ids,
+    #             output_hidden_states=True,
+    #         )
+    #         print(f"{i}; all_outputs.logits.shape: {all_outputs.logits.shape}")
             
-        # all_outputs = self.llm.forward(
-        #     inputs_embeds=all_inputs_embeds,
-        #     attention_mask=all_attention_mask,
-        #     position_ids=all_position_ids,
-        #     output_hidden_states=True,
-        # )
+    #     # all_outputs = self.llm.forward(
+    #     #     inputs_embeds=all_inputs_embeds,
+    #     #     attention_mask=all_attention_mask,
+    #     #     position_ids=all_position_ids,
+    #     #     output_hidden_states=True,
+    #     # )
         
-            last_hidden_states_for_latents = all_outputs.hidden_states[-1][
-                :, question_length - 1 : question_length + latent_length - 1
-            ]
+    #         last_hidden_states_for_latents = all_outputs.hidden_states[-1][
+    #             :, question_length - 1 : question_length + latent_length - 1
+    #         ]
 
-            all_last_hidden_states.append(last_hidden_states_for_latents)
-            all_output_logits.append(all_outputs.logits)
-            answer_logits = all_outputs.logits[:, -answer_length:-1, :]
-            all_answer_logits.append(answer_logits)
+    #         all_last_hidden_states.append(last_hidden_states_for_latents)
+    #         all_output_logits.append(all_outputs.logits)
+    #         answer_logits = all_outputs.logits[:, -answer_length:-1, :]
+    #         all_answer_logits.append(answer_logits)
             
-            print(f"last_hidden_states_for_latents.shape: {last_hidden_states_for_latents.shape}")
-            print(f"output_logits.shape: {all_outputs.logits.shape}")
-            print(f"answer_logits.shape: {answer_logits.shape}")
+    #         print(f"last_hidden_states_for_latents.shape: {last_hidden_states_for_latents.shape}")
+    #         print(f"output_logits.shape: {all_outputs.logits.shape}")
+    #         print(f"answer_logits.shape: {answer_logits.shape}")
 
-        all_last_hidden_states = torch.cat(all_last_hidden_states, dim=0)
-        all_output_logits = torch.cat(all_output_logits, dim=0)
-        all_answer_logits = torch.cat(all_answer_logits, dim=0)
-        print(f"all_last_hidden_states.shape: {all_last_hidden_states.shape}")
-        print(f"all_output_logits.shape: {all_output_logits.shape}")
-        print(f"all_answer_logits.shape: {all_answer_logits.shape}")
+    #     all_last_hidden_states = torch.cat(all_last_hidden_states, dim=0)
+    #     all_output_logits = torch.cat(all_output_logits, dim=0)
+    #     all_answer_logits = torch.cat(all_answer_logits, dim=0)
+    #     print(f"all_last_hidden_states.shape: {all_last_hidden_states.shape}")
+    #     print(f"all_output_logits.shape: {all_output_logits.shape}")
+    #     print(f"all_answer_logits.shape: {all_answer_logits.shape}")
 
-        distributions = self.latent_policy.forward(all_last_hidden_states)
-        latent_logprobs = distributions.log_prob(e.latent_inputs_embeds / self.embeds_std).mean(dim=-1)
+    #     distributions = self.latent_policy.forward(all_last_hidden_states)
+    #     latent_logprobs = distributions.log_prob(e.latent_inputs_embeds / self.embeds_std).mean(dim=-1)
 
-        # logits for end of think
-        logits_for_eol = []
-        for b, latent_length in enumerate(e.n_latent_forward):
-            logits_for_eol.append(all_output_logits[b, question_length + latent_length - 1])
-        logits_for_eol = torch.stack(logits_for_eol, dim=0)
-        print(f"logits_for_eol.shape: {logits_for_eol.shape}")
-        print(f"all_answer_logits.shape: {all_answer_logits.shape}")
-        # answer_logprobs
-        answer_logits = torch.cat([logits_for_eol, all_answer_logits], dim=1)
-        answer_logprobs = F.log_softmax(answer_logits, dim=-1)
-        answer_logprobs = answer_logprobs.gather(dim=-1, index=e.answer_input_ids.unsqueeze(-1)).squeeze(-1)
-        print(f"latent_logprobs.shape: {latent_logprobs.shape}")
-        print(f"answer_logprobs.shape: {answer_logprobs.shape}")
-        # return latent_logprobs, answer_logprobs
-        return latent_logprobs, answer_logprobs
+    #     # logits for end of think
+    #     logits_for_eol = []
+    #     for b, latent_length in enumerate(e.n_latent_forward):
+    #         logits_for_eol.append(all_output_logits[b, question_length + latent_length - 1])
+    #     logits_for_eol = torch.stack(logits_for_eol, dim=0)
+    #     print(f"logits_for_eol.shape: {logits_for_eol.shape}")
+    #     print(f"all_answer_logits.shape: {all_answer_logits.shape}")
+    #     # answer_logprobs
+    #     answer_logits = torch.cat([logits_for_eol, all_answer_logits], dim=1)
+    #     answer_logprobs = F.log_softmax(answer_logits, dim=-1)
+    #     answer_logprobs = answer_logprobs.gather(dim=-1, index=e.answer_input_ids.unsqueeze(-1)).squeeze(-1)
+    #     print(f"latent_logprobs.shape: {latent_logprobs.shape}")
+    #     print(f"answer_logprobs.shape: {answer_logprobs.shape}")
+    #     # return latent_logprobs, answer_logprobs
+    #     return latent_logprobs, answer_logprobs
 
     # -- rl ends --#
+
+
+    def get_logprobs(self, e: grpo.Experience):
+        # lens
+        B = e.question_input_ids.size(0)
+        question_length = e.question_input_ids.size(1)
+        latent_length   = e.latent_inputs_embeds.size(1)
+        answer_length   = e.answer_input_ids.size(1)
+
+        # embed (these are modest-sized)
+        question_inputs_embeds = self.embedding(e.question_input_ids)
+        answer_inputs_embeds   = self.embedding(e.answer_input_ids)
+
+        # containers to accumulate minimal things
+        latent_hiddens = []   # [sum(latent_len_i), D] after cat
+        eol_hiddens    = []   # [B, D]
+        ans_hiddens    = []   # [sum(answer_len_i-1), D]
+        ans_targets    = []   # same length as ans_hiddens (flattened targets)
+        # Note: we do not store any logits tensors
+
+        # Per-sample forward to keep activation memory low
+        for i in range(B):
+            inputs_embeds = torch.cat([
+                question_inputs_embeds[i:i+1], 
+                e.latent_inputs_embeds[i:i+1], 
+                answer_inputs_embeds[i:i+1]
+            ], dim=1)                                 # [1, T, D]
+
+            attn_mask = torch.cat([
+                e.question_attention_mask[i:i+1],
+                e.latent_attention_mask[i:i+1],
+                e.answer_attention_mask[i:i+1]
+            ], dim=1)                                  # [1, T]
+
+            pos_ids = get_position_ids_from_attention_mask(attn_mask)
+
+            # Only last_hidden_state; avoids huge hidden_states list + logits
+            out = self.llm.forward(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attn_mask,
+                position_ids=pos_ids,
+                use_cache=False,              # be explicit
+                output_hidden_states=False,   # critical for memory
+                return_dict=True,
+            )
+            last_h = out.last_hidden_state    # [1, T, D]; keep graph
+
+            # 1) latent positions: we need states that *predict* each latent token
+            #    Those are the states right before each latent token -> shift by -1
+            #    range: [q_len-1, q_len+latent_len-2]
+            latent_states = last_h[:, (question_length-1):(question_length+latent_length-1), :]  # [1, L_latent, D]
+            latent_hiddens.append(latent_states.squeeze(0))  # [L_latent, D]
+
+            # 2) EOL position (single token)
+            this_latent_len = int(e.n_latent_forward[i].item())  # scalar
+            eol_pos = question_length + this_latent_len - 1
+            eol_hiddens.append(last_h[:, eol_pos, :].squeeze(0))  # [D]
+
+            # 3) Answer positions that *predict* answer tokens:
+            # we need the states for tokens that predict answer ids:
+            # positions: last_h[:, -answer_length:-1, :]
+            if answer_length > 1:
+                ans_pred_states = last_h[:, -answer_length:-1, :].squeeze(0)   # [(A-1), D]
+                ans_hiddens.append(ans_pred_states)
+
+                # targets are the next tokens in the answer
+                ans_targets.append(e.answer_input_ids[i, 1:])                  # [(A-1)]
+            # else: no answer tokens to score besides EOL
+
+            # free per-sample big tensors quickly
+            del out, last_h, inputs_embeds, attn_mask, pos_ids
+
+        # --- stack & compute logprobs with tiny projections ---
+        # Latent logprobs: distribution over embeds (no vocab blow-up)
+        latent_hiddens = torch.cat(latent_hiddens, dim=0)                           # [sum L_lat, D]
+        distributions = self.latent_policy.forward(latent_hiddens)                  # keeps grad
+        # compare against provided latent_inputs_embeds (flattened the same way)
+        latent_targets = torch.cat([e.latent_inputs_embeds[i, :, :] 
+                                    for i in range(B)], dim=0)                       # [sum L_lat, D]
+        latent_logprobs = distributions.log_prob(latent_targets / self.embeds_std).mean(dim=-1)  # [sum L_lat]
+        # reshape back to [B, L_latent]
+        latent_logprobs = latent_logprobs.view(B, latent_length)
+
+        # Answer logprobs:
+        # First token logprob uses EOL hidden -> target is the *first* answer token
+        eol_hiddens  = torch.stack(eol_hiddens, dim=0)                               # [B, D]
+        first_targets = e.answer_input_ids[:, 0]                                     # [B]
+
+        first_lp = chunked_project_and_log_softmax(
+            eol_hiddens, self.llm.lm_head, first_targets, chunk_size=2048
+        )                                                                             # [B]
+
+        # Remaining answer tokens (if any)
+        if ans_hiddens:
+            ans_hiddens  = torch.cat(ans_hiddens, dim=0)                              # [sum(A_i-1), D]
+            ans_targets  = torch.cat(ans_targets, dim=0).long()                       # [sum(A_i-1)]
+            rest_lp = chunked_project_and_log_softmax(
+                ans_hiddens, self.llm.lm_head, ans_targets, chunk_size=2048
+            )                                                                         # [sum(A_i-1)]
+
+            # stitch per-sample into [B, A]
+            answer_logprobs = []
+            cursor = 0
+            for i in range(B):
+                A = answer_length
+                if A > 1:
+                    n = A - 1
+                    answer_logprobs.append(torch.cat([first_lp[i:i+1], rest_lp[cursor:cursor+n]], dim=0))  # [A]
+                    cursor += n
+                else:
+                    answer_logprobs.append(first_lp[i:i+1])  # [1]
+            answer_logprobs = torch.stack(answer_logprobs, dim=0)                     # [B, A]
+        else:
+            answer_logprobs = first_lp[:, None]                                        # [B, 1]
+
+        return latent_logprobs, answer_logprobs
