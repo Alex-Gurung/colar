@@ -955,124 +955,231 @@ class LitCoLaR(LitCoTModelBase):
     # -- rl ends --#
 
 
+    # def get_logprobs(self, e: grpo.Experience):
+    #     # lens
+    #     B = e.question_input_ids.size(0)
+    #     question_length = e.question_input_ids.size(1)
+    #     latent_length   = e.latent_inputs_embeds.size(1)
+    #     answer_length   = e.answer_input_ids.size(1)
+
+    #     # embed (these are modest-sized)
+    #     question_inputs_embeds = self.embedding(e.question_input_ids)
+    #     answer_inputs_embeds   = self.embedding(e.answer_input_ids)
+
+    #     # containers to accumulate minimal things
+    #     latent_hiddens = []   # [sum(latent_len_i), D] after cat
+    #     eol_hiddens    = []   # [B, D]
+    #     ans_hiddens    = []   # [sum(answer_len_i-1), D]
+    #     ans_targets    = []   # same length as ans_hiddens (flattened targets)
+    #     # Note: we do not store any logits tensors
+
+    #     base = getattr(self.llm, "model", getattr(self.llm, "transformer", None))
+    #     if base is None:
+    #         raise RuntimeError("Could not find base model submodule (tried .model and .transformer)")
+
+
+
+    #     # Per-sample forward to keep activation memory low
+    #     for i in range(B):
+    #         inputs_embeds = torch.cat([
+    #             question_inputs_embeds[i:i+1], 
+    #             e.latent_inputs_embeds[i:i+1], 
+    #             answer_inputs_embeds[i:i+1]
+    #         ], dim=1)                                 # [1, T, D]
+
+    #         attn_mask = torch.cat([
+    #             e.question_attention_mask[i:i+1],
+    #             e.latent_attention_mask[i:i+1],
+    #             e.answer_attention_mask[i:i+1]
+    #         ], dim=1)                                  # [1, T]
+
+    #         pos_ids = get_position_ids_from_attention_mask(attn_mask)
+
+    #         # Only last_hidden_state; avoids huge hidden_states list + logits
+    #         # out = self.llm.forward(
+    #         out = base.forward(
+    #             inputs_embeds=inputs_embeds,
+    #             attention_mask=attn_mask,
+    #             position_ids=pos_ids,
+    #             use_cache=False,              # be explicit
+    #             output_hidden_states=False,   # critical for memory
+    #             return_dict=True,
+    #         )
+    #         last_h = out.last_hidden_state    # [1, T, D]; keep graph
+
+    #         # 1) latent positions: we need states that *predict* each latent token
+    #         #    Those are the states right before each latent token -> shift by -1
+    #         #    range: [q_len-1, q_len+latent_len-2]
+    #         latent_states = last_h[:, (question_length-1):(question_length+latent_length-1), :]  # [1, L_latent, D]
+    #         latent_hiddens.append(latent_states.squeeze(0))  # [L_latent, D]
+
+    #         # 2) EOL position (single token)
+    #         this_latent_len = int(e.n_latent_forward[i].item())  # scalar
+    #         eol_pos = question_length + this_latent_len - 1
+    #         eol_hiddens.append(last_h[:, eol_pos, :].squeeze(0))  # [D]
+
+    #         # 3) Answer positions that *predict* answer tokens:
+    #         # we need the states for tokens that predict answer ids:
+    #         # positions: last_h[:, -answer_length:-1, :]
+    #         if answer_length > 1:
+    #             ans_pred_states = last_h[:, -answer_length:-1, :].squeeze(0)   # [(A-1), D]
+    #             ans_hiddens.append(ans_pred_states)
+
+    #             # targets are the next tokens in the answer
+    #             ans_targets.append(e.answer_input_ids[i, 1:])                  # [(A-1)]
+    #         # else: no answer tokens to score besides EOL
+
+    #         # free per-sample big tensors quickly
+    #         del out, last_h, inputs_embeds, attn_mask, pos_ids
+
+    #     # --- stack & compute logprobs with tiny projections ---
+    #     # Latent logprobs: distribution over embeds (no vocab blow-up)
+    #     latent_hiddens = torch.cat(latent_hiddens, dim=0)                           # [sum L_lat, D]
+    #     distributions = self.latent_policy.forward(latent_hiddens)                  # keeps grad
+    #     # compare against provided latent_inputs_embeds (flattened the same way)
+    #     latent_targets = torch.cat([e.latent_inputs_embeds[i, :, :] 
+    #                                 for i in range(B)], dim=0)                       # [sum L_lat, D]
+    #     latent_logprobs = distributions.log_prob(latent_targets / self.embeds_std).mean(dim=-1)  # [sum L_lat]
+    #     # reshape back to [B, L_latent]
+    #     latent_logprobs = latent_logprobs.view(B, latent_length)
+
+    #     # Answer logprobs:
+    #     # First token logprob uses EOL hidden -> target is the *first* answer token
+    #     eol_hiddens  = torch.stack(eol_hiddens, dim=0)                               # [B, D]
+    #     first_targets = e.answer_input_ids[:, 0]                                     # [B]
+
+    #     first_lp = chunked_project_and_log_softmax(
+    #         eol_hiddens, self.llm.lm_head, first_targets, chunk_size=2048
+    #     )                                                                             # [B]
+
+    #     # Remaining answer tokens (if any)
+    #     if ans_hiddens:
+    #         ans_hiddens  = torch.cat(ans_hiddens, dim=0)                              # [sum(A_i-1), D]
+    #         ans_targets  = torch.cat(ans_targets, dim=0).long()                       # [sum(A_i-1)]
+    #         rest_lp = chunked_project_and_log_softmax(
+    #             ans_hiddens, self.llm.lm_head, ans_targets, chunk_size=2048
+    #         )                                                                         # [sum(A_i-1)]
+
+    #         # stitch per-sample into [B, A]
+    #         answer_logprobs = []
+    #         cursor = 0
+    #         for i in range(B):
+    #             A = answer_length
+    #             if A > 1:
+    #                 n = A - 1
+    #                 answer_logprobs.append(torch.cat([first_lp[i:i+1], rest_lp[cursor:cursor+n]], dim=0))  # [A]
+    #                 cursor += n
+    #             else:
+    #                 answer_logprobs.append(first_lp[i:i+1])  # [1]
+    #         answer_logprobs = torch.stack(answer_logprobs, dim=0)                     # [B, A]
+    #     else:
+    #         answer_logprobs = first_lp[:, None]                                        # [B, 1]
+
+    #     return latent_logprobs, answer_logprobs
+
+
+    def _token_logprobs_from_hidden(lm_head, hiddens, target_ids):
+        # hiddens: [N, D], target_ids: [N]
+        logits = lm_head(hiddens)                # [N, V]
+        nll = F.cross_entropy(logits.float(), target_ids, reduction='none')
+        return -nll
+
     def get_logprobs(self, e: grpo.Experience):
-        # lens
         B = e.question_input_ids.size(0)
         question_length = e.question_input_ids.size(1)
         latent_length   = e.latent_inputs_embeds.size(1)
         answer_length   = e.answer_input_ids.size(1)
 
-        # embed (these are modest-sized)
+        # small embeddings
         question_inputs_embeds = self.embedding(e.question_input_ids)
         answer_inputs_embeds   = self.embedding(e.answer_input_ids)
 
-        # containers to accumulate minimal things
-        latent_hiddens = []   # [sum(latent_len_i), D] after cat
+        latent_hiddens = []   # concat -> [sum L_lat, D]
         eol_hiddens    = []   # [B, D]
-        ans_hiddens    = []   # [sum(answer_len_i-1), D]
-        ans_targets    = []   # same length as ans_hiddens (flattened targets)
-        # Note: we do not store any logits tensors
+        ans_hiddens    = []   # concat -> [sum(A_i-1), D]
+        ans_targets    = []   # [sum(A_i-1)]
 
+        # use base model to get last_hidden_state only
         base = getattr(self.llm, "model", getattr(self.llm, "transformer", None))
         if base is None:
             raise RuntimeError("Could not find base model submodule (tried .model and .transformer)")
 
-
-
-        # Per-sample forward to keep activation memory low
         for i in range(B):
             inputs_embeds = torch.cat([
-                question_inputs_embeds[i:i+1], 
-                e.latent_inputs_embeds[i:i+1], 
-                answer_inputs_embeds[i:i+1]
-            ], dim=1)                                 # [1, T, D]
+                question_inputs_embeds[i:i+1],
+                e.latent_inputs_embeds[i:i+1],
+                answer_inputs_embeds[i:i+1],
+            ], dim=1)  # [1, T, D]
 
             attn_mask = torch.cat([
                 e.question_attention_mask[i:i+1],
                 e.latent_attention_mask[i:i+1],
-                e.answer_attention_mask[i:i+1]
-            ], dim=1)                                  # [1, T]
+                e.answer_attention_mask[i:i+1],
+            ], dim=1)  # [1, T]
 
-            pos_ids = get_position_ids_from_attention_mask(attn_mask)
+            pos_ids = get_position_ids_from_attention_mask(attn_mask).to(attn_mask.device, dtype=torch.long)
 
-            # Only last_hidden_state; avoids huge hidden_states list + logits
-            # out = self.llm.forward(
-            out = base.forward(
+            out = base(
                 inputs_embeds=inputs_embeds,
                 attention_mask=attn_mask,
                 position_ids=pos_ids,
-                use_cache=False,              # be explicit
-                output_hidden_states=False,   # critical for memory
+                use_cache=False,
+                output_hidden_states=False,  # critical: avoids tuple of all layers
                 return_dict=True,
             )
-            last_h = out.last_hidden_state    # [1, T, D]; keep graph
+            last_h = out.last_hidden_state     # [1, T, D]
 
-            # 1) latent positions: we need states that *predict* each latent token
-            #    Those are the states right before each latent token -> shift by -1
+            # 1) latent predictor states (shifted by -1 over the latent span)
             #    range: [q_len-1, q_len+latent_len-2]
             latent_states = last_h[:, (question_length-1):(question_length+latent_length-1), :]  # [1, L_latent, D]
             latent_hiddens.append(latent_states.squeeze(0))  # [L_latent, D]
 
-            # 2) EOL position (single token)
-            this_latent_len = int(e.n_latent_forward[i].item())  # scalar
+            # 2) EOL predictor state: position that predicts first answer token
+            this_latent_len = int(e.n_latent_forward[i].item())
             eol_pos = question_length + this_latent_len - 1
             eol_hiddens.append(last_h[:, eol_pos, :].squeeze(0))  # [D]
 
-            # 3) Answer positions that *predict* answer tokens:
-            # we need the states for tokens that predict answer ids:
-            # positions: last_h[:, -answer_length:-1, :]
+            # 3) answer predictor states for tokens 2..A
             if answer_length > 1:
-                ans_pred_states = last_h[:, -answer_length:-1, :].squeeze(0)   # [(A-1), D]
+                ans_pred_states = last_h[:, -answer_length:-1, :].squeeze(0)  # [(A-1), D]
                 ans_hiddens.append(ans_pred_states)
+                ans_targets.append(e.answer_input_ids[i, 1:])                 # [(A-1)]
 
-                # targets are the next tokens in the answer
-                ans_targets.append(e.answer_input_ids[i, 1:])                  # [(A-1)]
-            # else: no answer tokens to score besides EOL
-
-            # free per-sample big tensors quickly
+            # free big refs
             del out, last_h, inputs_embeds, attn_mask, pos_ids
 
-        # --- stack & compute logprobs with tiny projections ---
-        # Latent logprobs: distribution over embeds (no vocab blow-up)
-        latent_hiddens = torch.cat(latent_hiddens, dim=0)                           # [sum L_lat, D]
-        distributions = self.latent_policy.forward(latent_hiddens)                  # keeps grad
-        # compare against provided latent_inputs_embeds (flattened the same way)
-        latent_targets = torch.cat([e.latent_inputs_embeds[i, :, :] 
-                                    for i in range(B)], dim=0)                       # [sum L_lat, D]
-        latent_logprobs = distributions.log_prob(latent_targets / self.embeds_std).mean(dim=-1)  # [sum L_lat]
-        # reshape back to [B, L_latent]
+        # --- latent logprobs via latent_policy (no vocab projection) ---
+        latent_hiddens = torch.cat(latent_hiddens, dim=0)  # [sum L_lat, D]
+        distributions = self.latent_policy(latent_hiddens) # keeps grad
+
+        latent_targets = torch.cat([e.latent_inputs_embeds[i, :, :] for i in range(B)], dim=0)  # [sum L_lat, D]
+        latent_logprobs = distributions.log_prob(latent_targets / self.embeds_std).mean(dim=-1) # [sum L_lat]
         latent_logprobs = latent_logprobs.view(B, latent_length)
 
-        # Answer logprobs:
-        # First token logprob uses EOL hidden -> target is the *first* answer token
-        eol_hiddens  = torch.stack(eol_hiddens, dim=0)                               # [B, D]
-        first_targets = e.answer_input_ids[:, 0]                                     # [B]
+        # --- answer logprobs: project only needed states ---
+        eol_hiddens  = torch.stack(eol_hiddens, dim=0)  # [B, D]
+        first_targets = e.answer_input_ids[:, 0]        # [B]
 
-        first_lp = chunked_project_and_log_softmax(
-            eol_hiddens, self.llm.lm_head, first_targets, chunk_size=2048
-        )                                                                             # [B]
+        first_lp = _token_logprobs_from_hidden(self.llm.lm_head, eol_hiddens, first_targets)  # [B]
 
-        # Remaining answer tokens (if any)
         if ans_hiddens:
-            ans_hiddens  = torch.cat(ans_hiddens, dim=0)                              # [sum(A_i-1), D]
-            ans_targets  = torch.cat(ans_targets, dim=0).long()                       # [sum(A_i-1)]
-            rest_lp = chunked_project_and_log_softmax(
-                ans_hiddens, self.llm.lm_head, ans_targets, chunk_size=2048
-            )                                                                         # [sum(A_i-1)]
+            ans_hiddens = torch.cat(ans_hiddens, dim=0)     # [sum(A_i-1), D]
+            ans_targets = torch.cat(ans_targets, dim=0).long()
+            rest_lp = _token_logprobs_from_hidden(self.llm.lm_head, ans_hiddens, ans_targets)  # [sum(A_i-1)]
 
-            # stitch per-sample into [B, A]
+            # stitch back to [B, A]
             answer_logprobs = []
             cursor = 0
             for i in range(B):
                 A = answer_length
                 if A > 1:
                     n = A - 1
-                    answer_logprobs.append(torch.cat([first_lp[i:i+1], rest_lp[cursor:cursor+n]], dim=0))  # [A]
+                    answer_logprobs.append(torch.cat([first_lp[i:i+1], rest_lp[cursor:cursor+n]], dim=0))
                     cursor += n
                 else:
-                    answer_logprobs.append(first_lp[i:i+1])  # [1]
-            answer_logprobs = torch.stack(answer_logprobs, dim=0)                     # [B, A]
+                    answer_logprobs.append(first_lp[i:i+1])
+            answer_logprobs = torch.stack(answer_logprobs, dim=0)  # [B, A]
         else:
-            answer_logprobs = first_lp[:, None]                                        # [B, 1]
+            answer_logprobs = first_lp[:, None]                     # [B, 1]
 
         return latent_logprobs, answer_logprobs
