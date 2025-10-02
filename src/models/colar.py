@@ -781,6 +781,7 @@ class LitCoLaR(LitCoTModelBase):
                 rl_mode=True,
             )
         )
+        torch.cuda.empty_cache()
         pred_answer_strings = self.tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
         question_strings = self.tokenizer.batch_decode(question_input_ids, skip_special_tokens=True)
 
@@ -901,7 +902,8 @@ class LitCoLaR(LitCoTModelBase):
                 inputs_embeds=inputs_embeds,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
-                output_hidden_states=True,
+                # output_hidden_states=True,
+                output_hidden_states=False,
             )
             print(f"{i}; all_outputs.logits.shape: {all_outputs.logits.shape}")
             
@@ -911,6 +913,7 @@ class LitCoLaR(LitCoTModelBase):
         #     position_ids=all_position_ids,
         #     output_hidden_states=True,
         # )
+        
             last_hidden_states_for_latents = all_outputs.hidden_states[-1][
                 :, question_length - 1 : question_length + latent_length - 1
             ]
