@@ -1104,52 +1104,52 @@ class LitCoLaR(LitCoTModelBase):
         if base is None:
             raise RuntimeError("Could not find base model submodule (tried .model and .transformer)")
 
-        amp = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if torch.cuda.is_available() else nullcontext()
-        with amp():
-            for i in range(B):
-                inputs_embeds = torch.cat([
-                    question_inputs_embeds[i:i+1],
-                    e.latent_inputs_embeds[i:i+1],
-                    answer_inputs_embeds[i:i+1],
-                ], dim=1)  # [1, T, D]
+        # amp = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if torch.cuda.is_available() else nullcontext()
+        # with amp():
+        for i in range(B):
+            inputs_embeds = torch.cat([
+                question_inputs_embeds[i:i+1],
+                e.latent_inputs_embeds[i:i+1],
+                answer_inputs_embeds[i:i+1],
+            ], dim=1)  # [1, T, D]
 
-                attn_mask = torch.cat([
-                    e.question_attention_mask[i:i+1],
-                    e.latent_attention_mask[i:i+1],
-                    e.answer_attention_mask[i:i+1],
-                ], dim=1)  # [1, T]
+            attn_mask = torch.cat([
+                e.question_attention_mask[i:i+1],
+                e.latent_attention_mask[i:i+1],
+                e.answer_attention_mask[i:i+1],
+            ], dim=1)  # [1, T]
 
-                pos_ids = get_position_ids_from_attention_mask(attn_mask).to(attn_mask.device, dtype=torch.long)
+            pos_ids = get_position_ids_from_attention_mask(attn_mask).to(attn_mask.device, dtype=torch.long)
 
-                out = base(
-                    inputs_embeds=inputs_embeds,
-                    attention_mask=attn_mask,
-                    position_ids=pos_ids,
-                    use_cache=False,
-                    output_hidden_states=False,  # critical: avoids tuple of all layers
-                    return_dict=True,
-                )
-                last_h = out.last_hidden_state     # [1, T, D]
+            out = base(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attn_mask,
+                position_ids=pos_ids,
+                use_cache=False,
+                output_hidden_states=False,  # critical: avoids tuple of all layers
+                return_dict=True,
+            )
+            last_h = out.last_hidden_state     # [1, T, D]
 
-                # 1) latent predictor states (shifted by -1 over the latent span)
-                #    range: [q_len-1, q_len+latent_len-2]
-                latent_states = last_h[:, (question_length-1):(question_length+latent_length-1), :]  # [1, L_latent, D]
-                latent_hiddens.append(latent_states.squeeze(0))  # [L_latent, D]
+            # 1) latent predictor states (shifted by -1 over the latent span)
+            #    range: [q_len-1, q_len+latent_len-2]
+            latent_states = last_h[:, (question_length-1):(question_length+latent_length-1), :]  # [1, L_latent, D]
+            latent_hiddens.append(latent_states.squeeze(0))  # [L_latent, D]
 
-                # 2) EOL predictor state: position that predicts first answer token
-                this_latent_len = int(e.n_latent_forward[i].item())
-                eol_pos = question_length + this_latent_len - 1
-                eol_hiddens.append(last_h[:, eol_pos, :].squeeze(0))  # [D]
+            # 2) EOL predictor state: position that predicts first answer token
+            this_latent_len = int(e.n_latent_forward[i].item())
+            eol_pos = question_length + this_latent_len - 1
+            eol_hiddens.append(last_h[:, eol_pos, :].squeeze(0))  # [D]
 
-                # 3) answer predictor states for tokens 2..A
-                if answer_length > 1:
-                    ans_pred_states = last_h[:, -answer_length:-1, :].squeeze(0)  # [(A-1), D]
-                    ans_hiddens.append(ans_pred_states)
-                    ans_targets.append(e.answer_input_ids[i, 1:])                 # [(A-1)]
+            # 3) answer predictor states for tokens 2..A
+            if answer_length > 1:
+                ans_pred_states = last_h[:, -answer_length:-1, :].squeeze(0)  # [(A-1), D]
+                ans_hiddens.append(ans_pred_states)
+                ans_targets.append(e.answer_input_ids[i, 1:])                 # [(A-1)]
 
-                # free big refs
-                del out, last_h, inputs_embeds, attn_mask, pos_ids
-                torch.cuda.empty_cache()
+            # free big refs
+            del out, last_h, inputs_embeds, attn_mask, pos_ids
+            torch.cuda.empty_cache()
 
         # --- latent logprobs via latent_policy (no vocab projection) ---
         latent_hiddens = torch.cat(latent_hiddens, dim=0)  # [sum L_lat, D]
