@@ -894,13 +894,16 @@ class LitCoLaR(LitCoTModelBase):
             inputs_embeds = all_inputs_embeds[i, :, :].unsqueeze(0)
             attention_mask = all_attention_mask[i, :].unsqueeze(0)
             position_ids = all_position_ids[i, :].unsqueeze(0)
+            print(f"{i}; inputs_embeds.shape: {inputs_embeds.shape}")
+            print(f"{i}; attention_mask.shape: {attention_mask.shape}")
+            print(f"{i}; position_ids.shape: {position_ids.shape}")
             all_outputs = self.llm.forward(
                 inputs_embeds=inputs_embeds,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
                 output_hidden_states=True,
             )
-            print(f"all_outputs.logits.shape: {all_outputs.logits.shape}")
+            print(f"{i}; all_outputs.logits.shape: {all_outputs.logits.shape}")
             
         # all_outputs = self.llm.forward(
         #     inputs_embeds=all_inputs_embeds,
