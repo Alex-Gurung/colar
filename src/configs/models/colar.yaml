@@ -101,6 +101,7 @@ trainer:
   accumulate_grad_batches: 1 # needed for RL
   # strategy: deepspeed_stage_2_offload
   strategy: deepspeed_stage_3_offload
+  enable_model_summary: false
   # strategy: deepspeed_stage_2
   # strategy: ddp
     # class_path: lightning.pytorch.strategies.FSDPStrategy
