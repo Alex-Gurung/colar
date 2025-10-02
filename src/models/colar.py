@@ -790,7 +790,7 @@ class LitCoLaR(LitCoTModelBase):
         for q in questions:
             group_questions.extend([q] * group_size)
 
-        print(f"group_questions: {group_questions}")
+        # print(f"group_questions: {group_questions}")
         print(f"len(group_questions): {len(group_questions)}")
 
         # 1: sample
