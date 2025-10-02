@@ -384,6 +384,7 @@ Question: {} Let's think step by step:
 
         # 2.2: latent generation
         for _ in range(max_n_latent_forward):
+            print(f"latent generation step {_}")
             if return_latent_hidden_states:
                 all_latent_hidden_states.append(torch.stack(outputs.hidden_states, dim=1)[:, :, -1:, :])
                 token_state = outputs.hidden_states[-1][:, -1:, :]
@@ -420,6 +421,9 @@ Question: {} Let's think step by step:
 
             current_position_ids = current_position_ids + not_is_done_long
             n_latent_forward += not_is_done_long
+
+            print(f"inside latent generate, input_embeds shape: {current_inputs_embeds.shape}")
+            print(f"inside latent generate, past_key_values: {past_key_values}")
 
             outputs = base_model(
                 inputs_embeds=current_inputs_embeds,
@@ -458,7 +462,7 @@ Question: {} Let's think step by step:
             is_done = is_done | is_eol
             # print(f"   is_eol: {is_eol.tolist()}")
             # print(f"   is_done: {is_done.tolist()}")
-
+            print(f"   is_done: {is_done.tolist()}")
             if is_done.all():
                 break
             # if _ > 10:
