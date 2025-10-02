@@ -800,7 +800,8 @@ class LitCoLaR(LitCoTModelBase):
                 rl_mode=True,
             )
         )
-        torch.cuda.empty_cache()
+        print(f"finished latent generation")
+        # torch.cuda.empty_cache()
         pred_answer_strings = self.tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
         question_strings = self.tokenizer.batch_decode(question_input_ids, skip_special_tokens=True)
 
