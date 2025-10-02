@@ -855,7 +855,7 @@ class LitCoLaR(LitCoTModelBase):
     def get_group_rewards_and_acc(
         self, pred_answers: List[str], gt_answer: str, n_latent_forward: torch.Tensor, question_strings: List[str]=None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        print(f"question_strings: {question_strings}")
+        # print(f"question_strings: {question_strings}")
         print(f"pred_answers: {pred_answers}")
         print(f"gt_answer: {gt_answer}")
         print(f"n_latent_forward: {n_latent_forward}")

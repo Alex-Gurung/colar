@@ -60,9 +60,11 @@ model:
       # group_size: 8
       # n_train_samples_per_epoch: 640
 
-      exp_batch_size: 8
+      # exp_batch_size: 8
+      exp_batch_size: 1
       group_size: 8
-      n_train_samples_per_epoch: 256
+      # n_train_samples_per_epoch: 256
+      n_train_samples_per_epoch: 64
       # Uncomment to enable memory-saving logit chunking (e.g., 32 or 16). Default None keeps full-context math.
       # logprob_chunk_size: 32
 
@@ -89,8 +91,8 @@ model:
         min_lr_rate: 0.1
 
 trainer:
-  # precision: bf16
-  precision: bf16-mixed
+  precision: bf16
+  # precision: bf16-mixed
   # max_epochs: 5
   max_epochs: 2
   # max_epochs: 1
