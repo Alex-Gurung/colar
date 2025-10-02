@@ -31,7 +31,7 @@ def ce_on_selected_tokens(
     last_hidden: torch.Tensor,     # [B, T, D]
     labels: torch.Tensor,          # [B, T]  (-100 = ignore)
     lm_head,                       # nn.Linear
-    chunk_size: int = 512,
+    chunk_size: int | None = None,
     backend: str = "liger",        # "liger" or "torch"
 ) -> torch.Tensor:
     """
@@ -59,9 +59,12 @@ def ce_on_selected_tokens(
     weight = lm_head.weight if use_liger else None
     bias = getattr(lm_head, "bias", None) if use_liger else None
 
-    for i in range(0, N, chunk_size):
-        s = sel_states[i:i + chunk_size]  # [n_i, D]
-        y = sel_labels[i:i + chunk_size]  # [n_i]
+    step = N if (chunk_size is None or chunk_size <= 0) else chunk_size
+
+    for i in range(0, N, step):
+        j = i + step
+        s = sel_states[i:j]  # [n_i, D]
+        y = sel_labels[i:j]  # [n_i]
 
         if use_liger:
             # Fused matmul + CE (no [n_i, V] logits tensor)
@@ -101,17 +104,21 @@ class LitCoLaR(LitCoTModelBase):
         if model_kwargs.do_rl:
             self.init_rl()
 
-        # Controls how many tokens are processed at once when projecting to logits.
-        default_chunk = 32
+        # Optional chunking for memory-constrained runs.
         rl_cfg = getattr(self.model_kwargs, "rl_config", None)
         if rl_cfg is None:
-            self.logprob_chunk_size = default_chunk
+            chunk = None
         else:
             if isinstance(rl_cfg, dict):
-                chunk = rl_cfg.get("logprob_chunk_size", default_chunk)
+                chunk = rl_cfg.get("logprob_chunk_size")
             else:
-                chunk = getattr(rl_cfg, "logprob_chunk_size", default_chunk)
-            self.logprob_chunk_size = max(1, int(chunk))
+                chunk = getattr(rl_cfg, "logprob_chunk_size", None)
+
+        if chunk is None:
+            self.logprob_chunk_size = None
+        else:
+            chunk = int(chunk)
+            self.logprob_chunk_size = chunk if chunk > 0 else None
 
         # model_class = AutoLigerKernelForCausalLM
         # self.baseline_llm = model_class.from_pretrained(model_kwargs.model_id, 
@@ -1093,18 +1100,24 @@ class LitCoLaR(LitCoTModelBase):
     def _token_logprobs_from_hidden(self, lm_head, hiddens, target_ids, chunk_size: int | None = None):
         # hiddens: [N, D], target_ids: [N]
         if chunk_size is None:
-            chunk_size = getattr(self, "logprob_chunk_size", 32)
+            chunk_size = getattr(self, "logprob_chunk_size", None)
 
-        logprobs = []
-        for start in range(0, hiddens.size(0), chunk_size):
-            end = start + chunk_size
+        if chunk_size is None or chunk_size <= 0:
+            logits = lm_head(hiddens)
+            log_soft = F.log_softmax(logits, dim=-1)
+            gathered = log_soft.gather(dim=-1, index=target_ids.long().unsqueeze(-1)).squeeze(-1)
+            return gathered
+
+        step = chunk_size
+        pieces = []
+        for start in range(0, hiddens.size(0), step):
+            end = start + step
             h_slice = hiddens[start:end]
             t_slice = target_ids[start:end].long()
             logits = lm_head(h_slice)
-            nll = F.cross_entropy(logits.float(), t_slice, reduction='none')
-            logprobs.append(-nll)
-            del logits, nll
-        return torch.cat(logprobs, dim=0)
+            log_soft = F.log_softmax(logits, dim=-1)
+            pieces.append(log_soft.gather(dim=-1, index=t_slice.unsqueeze(-1)).squeeze(-1))
+        return torch.cat(pieces, dim=0)
 
     def get_logprobs(self, e: grpo.Experience):
         B = e.question_input_ids.size(0)
@@ -1112,74 +1125,63 @@ class LitCoLaR(LitCoTModelBase):
         latent_length   = e.latent_inputs_embeds.size(1)
         answer_length   = e.answer_input_ids.size(1)
 
-        # small embeddings
         question_inputs_embeds = self.embedding(e.question_input_ids)
         answer_inputs_embeds   = self.embedding(e.answer_input_ids)
 
         latent_logprob_rows = []
         answer_logprob_rows = []
 
-        # use base model to get last_hidden_state only
-        base = getattr(self.llm, "model", getattr(self.llm, "transformer", None))
-        if base is None:
-            raise RuntimeError("Could not find base model submodule (tried .model and .transformer)")
-
         for i in range(B):
             inputs_embeds = torch.cat([
                 question_inputs_embeds[i:i+1],
                 e.latent_inputs_embeds[i:i+1],
                 answer_inputs_embeds[i:i+1],
-            ], dim=1)  # [1, T, D]
+            ], dim=1)
 
             attn_mask = torch.cat([
                 e.question_attention_mask[i:i+1],
                 e.latent_attention_mask[i:i+1],
                 e.answer_attention_mask[i:i+1],
-            ], dim=1)  # [1, T]
+            ], dim=1)
 
             pos_ids = get_position_ids_from_attention_mask(attn_mask).to(attn_mask.device, dtype=torch.long)
 
-            out = base(
+            outputs = self.llm.forward(
                 inputs_embeds=inputs_embeds,
                 attention_mask=attn_mask,
                 position_ids=pos_ids,
-                use_cache=False,
-                output_hidden_states=False,  # critical: avoids tuple of all layers
-                return_dict=True,
+                output_hidden_states=True,
             )
-            last_h = out.last_hidden_state     # [1, T, D]
 
-            # 1) latent predictor states (shifted by -1 over the latent span)
-            #    range: [q_len-1, q_len+latent_len-2]
-            latent_states = last_h[:, (question_length-1):(question_length+latent_length-1), :].squeeze(0)
-            latent_dist = self.latent_policy(latent_states)
-            latent_target = e.latent_inputs_embeds[i].to(latent_states.dtype)
-            latent_lp = latent_dist.log_prob(latent_target / self.embeds_std).mean(dim=-1)
-            latent_logprob_rows.append(latent_lp.to(torch.float32))
+            hidden_last = outputs.hidden_states[-1].squeeze(0)   # [T, D]
+            logits = outputs.logits.squeeze(0)                   # [T, V]
 
-            # 2) EOL predictor state: position that predicts first answer token
+            latent_states = hidden_last[question_length-1:question_length+latent_length-1]
+            latent_dist = self.latent_policy.forward(latent_states)
+            latent_targets = (e.latent_inputs_embeds[i] / self.embeds_std).to(latent_states.dtype)
+            latent_lp = latent_dist.log_prob(latent_targets).mean(dim=-1)
+            latent_logprob_rows.append(latent_lp)
+
             this_latent_len = int(e.n_latent_forward[i].item())
-            eol_pos = question_length + this_latent_len - 1
-            eol_hidden = last_h[:, eol_pos, :].squeeze(0).unsqueeze(0)
-            first_target = e.answer_input_ids[i, 0:1]
-            first_lp = self._token_logprobs_from_hidden(
-                self.llm.lm_head, eol_hidden, first_target
-            )[0]
+            eol_index = question_length + this_latent_len - 1
+            logits_for_eol = logits[eol_index]
 
-            # 3) answer predictor states for tokens 2..A
             if answer_length > 1:
-                ans_pred_states = last_h[:, -answer_length:-1, :].squeeze(0)
-                ans_targets = e.answer_input_ids[i, 1:]
-                rest_lp = self._token_logprobs_from_hidden(
-                    self.llm.lm_head, ans_pred_states, ans_targets
-                )
-                ans_vec = torch.cat([first_lp.unsqueeze(0), rest_lp], dim=0)
-                answer_logprob_rows.append(ans_vec.to(torch.float32))
+                subsequent_logits = logits[-answer_length:-1]
             else:
-                answer_logprob_rows.append(first_lp.unsqueeze(0).to(torch.float32))
+                subsequent_logits = logits.new_empty((0, logits.size(-1)))
 
-            # free big refs
-            del out, last_h, inputs_embeds, attn_mask, pos_ids
+            answer_logits = torch.cat([
+                logits_for_eol.unsqueeze(0),
+                subsequent_logits,
+            ], dim=0)
+
+            answer_logprobs = F.log_softmax(answer_logits, dim=-1)
+            answer_targets = e.answer_input_ids[i].unsqueeze(-1)
+            ans_lp = answer_logprobs.gather(dim=-1, index=answer_targets).squeeze(-1)
+            answer_logprob_rows.append(ans_lp)
+
+            del outputs, hidden_last, logits, inputs_embeds, attn_mask, pos_ids
             torch.cuda.empty_cache()
 
         latent_logprobs = torch.stack(latent_logprob_rows, dim=0)

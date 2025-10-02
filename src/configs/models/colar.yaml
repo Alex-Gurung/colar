@@ -63,8 +63,8 @@ model:
       exp_batch_size: 8
       group_size: 8
       n_train_samples_per_epoch: 256
-      # Controls how many tokens are projected at once when scoring logits; smaller values lower peak memory
-      logprob_chunk_size: 32
+      # Uncomment to enable memory-saving logit chunking (e.g., 32 or 16). Default None keeps full-context math.
+      # logprob_chunk_size: 32
 
   training_kwargs:
     optimizer:
