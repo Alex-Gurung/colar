@@ -338,6 +338,8 @@ Question: {} Let's think step by step:
         question_position_ids = get_position_ids_from_attention_mask(question_attention_mask)
         question_embeds = self.embedding(question_input_ids)
 
+        need_hidden_states = return_latent_hidden_states
+
         # DEBUG: Check question processing
         # print(f"🎬 QUESTION PROCESSING DEBUG:")
         # print(f"   Speed suffix: '{suffix}'")
@@ -349,7 +351,8 @@ Question: {} Let's think step by step:
             inputs_embeds=question_embeds,
             attention_mask=question_attention_mask,
             position_ids=question_position_ids,
-            output_hidden_states=True,
+            output_hidden_states=need_hidden_states,
+            use_cache=True,
         )
 
         # DEBUG: Check initial LLM output
@@ -376,8 +379,12 @@ Question: {} Let's think step by step:
         for _ in range(max_n_latent_forward):
             if return_latent_hidden_states:
                 all_latent_hidden_states.append(torch.stack(outputs.hidden_states, dim=1)[:, :, -1:, :])
+                token_state = outputs.hidden_states[-1][:, -1:, :]
+            else:
+                token_state = outputs.last_hidden_state[:, -1:, :]
+
             distributions = self.latent_policy.forward(
-                outputs.hidden_states[-1][:, -1:, :], temperature=latent_temperature
+                token_state, temperature=latent_temperature
             )  # outputs from last loops
 
             # FIX: Scale latent embeddings to match question embedding norms
@@ -412,7 +419,8 @@ Question: {} Let's think step by step:
                 attention_mask=all_attention_mask,
                 position_ids=current_position_ids,
                 past_key_values=past_key_values,
-                output_hidden_states=True,
+                output_hidden_states=need_hidden_states,
+                use_cache=True,
             )
             past_key_values = outputs.past_key_values
             # print(f"past_key_values: {past_key_values}")
@@ -969,4 +977,3 @@ Question: {} Let's think step by step:
         return res
 
     # -- evaluation ends --#
-
