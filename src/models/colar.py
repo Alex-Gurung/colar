@@ -1078,7 +1078,7 @@ class LitCoLaR(LitCoTModelBase):
     #     return latent_logprobs, answer_logprobs
 
 
-    def _token_logprobs_from_hidden(lm_head, hiddens, target_ids):
+    def _token_logprobs_from_hidden(self, lm_head, hiddens, target_ids):
         # hiddens: [N, D], target_ids: [N]
         logits = lm_head(hiddens)                # [N, V]
         nll = F.cross_entropy(logits.float(), target_ids, reduction='none')
@@ -1160,12 +1160,12 @@ class LitCoLaR(LitCoTModelBase):
         eol_hiddens  = torch.stack(eol_hiddens, dim=0)  # [B, D]
         first_targets = e.answer_input_ids[:, 0]        # [B]
 
-        first_lp = _token_logprobs_from_hidden(self.llm.lm_head, eol_hiddens, first_targets)  # [B]
+        first_lp = self._token_logprobs_from_hidden(self.llm.lm_head, eol_hiddens, first_targets)  # [B]
 
         if ans_hiddens:
             ans_hiddens = torch.cat(ans_hiddens, dim=0)     # [sum(A_i-1), D]
             ans_targets = torch.cat(ans_targets, dim=0).long()
-            rest_lp = _token_logprobs_from_hidden(self.llm.lm_head, ans_hiddens, ans_targets)  # [sum(A_i-1)]
+            rest_lp = self._token_logprobs_from_hidden(self.llm.lm_head, ans_hiddens, ans_targets)  # [sum(A_i-1)]
 
             # stitch back to [B, A]
             answer_logprobs = []
