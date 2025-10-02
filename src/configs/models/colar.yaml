@@ -94,16 +94,17 @@ trainer:
   precision: bf16
   # precision: bf16-mixed
   # max_epochs: 5
-  max_epochs: 2
+  max_epochs: 20
   # max_epochs: 1
   # accumulate_grad_batches: 16 # with 8 gpus
   # accumulate_grad_batches: 32 # 32 acc * 4 gpu * 1 batch size = 128
   # accumulate_grad_batches: 12 # 32 acc * 4 gpu * 1 batch size = 128
   # accumulate_grad_batches: 8
   accumulate_grad_batches: 1 # needed for RL
-  # strategy: deepspeed_stage_2_offload
-  strategy: deepspeed_stage_3_offload
+  strategy: deepspeed_stage_2_offload
+  # strategy: deepspeed_stage_3_offload
   enable_model_summary: false
+  check_val_every_n_epoch: None
   # strategy: deepspeed_stage_2
   # strategy: ddp
     # class_path: lightning.pytorch.strategies.FSDPStrategy
