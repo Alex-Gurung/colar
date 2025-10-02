@@ -101,6 +101,18 @@ class LitCoLaR(LitCoTModelBase):
         if model_kwargs.do_rl:
             self.init_rl()
 
+        # Controls how many tokens are processed at once when projecting to logits.
+        default_chunk = 32
+        rl_cfg = getattr(self.model_kwargs, "rl_config", None)
+        if rl_cfg is None:
+            self.logprob_chunk_size = default_chunk
+        else:
+            if isinstance(rl_cfg, dict):
+                chunk = rl_cfg.get("logprob_chunk_size", default_chunk)
+            else:
+                chunk = getattr(rl_cfg, "logprob_chunk_size", default_chunk)
+            self.logprob_chunk_size = max(1, int(chunk))
+
         # model_class = AutoLigerKernelForCausalLM
         # self.baseline_llm = model_class.from_pretrained(model_kwargs.model_id, 
         #     attn_implementation="flash_attention_3", 
@@ -1078,8 +1090,11 @@ class LitCoLaR(LitCoTModelBase):
     #     return latent_logprobs, answer_logprobs
 
 
-    def _token_logprobs_from_hidden(self, lm_head, hiddens, target_ids, chunk_size: int = 512):
+    def _token_logprobs_from_hidden(self, lm_head, hiddens, target_ids, chunk_size: int | None = None):
         # hiddens: [N, D], target_ids: [N]
+        if chunk_size is None:
+            chunk_size = getattr(self, "logprob_chunk_size", 32)
+
         logprobs = []
         for start in range(0, hiddens.size(0), chunk_size):
             end = start + chunk_size

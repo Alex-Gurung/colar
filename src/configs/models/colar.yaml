@@ -63,6 +63,8 @@ model:
       exp_batch_size: 8
       group_size: 8
       n_train_samples_per_epoch: 256
+      # Controls how many tokens are projected at once when scoring logits; smaller values lower peak memory
+      logprob_chunk_size: 32
 
   training_kwargs:
     optimizer:
@@ -97,7 +99,8 @@ trainer:
   # accumulate_grad_batches: 12 # 32 acc * 4 gpu * 1 batch size = 128
   # accumulate_grad_batches: 8
   accumulate_grad_batches: 1 # needed for RL
-  strategy: deepspeed_stage_2_offload
+  # strategy: deepspeed_stage_2_offload
+  strategy: deepspeed_stage_3_offload
   # strategy: deepspeed_stage_2
   # strategy: ddp
     # class_path: lightning.pytorch.strategies.FSDPStrategy
