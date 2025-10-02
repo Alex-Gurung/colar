@@ -1084,7 +1084,7 @@ class LitCoLaR(LitCoTModelBase):
         for start in range(0, hiddens.size(0), chunk_size):
             end = start + chunk_size
             h_slice = hiddens[start:end]
-            t_slice = target_ids[start:end]
+            t_slice = target_ids[start:end].long()
             logits = lm_head(h_slice)
             nll = F.cross_entropy(logits.float(), t_slice, reduction='none')
             logprobs.append(-nll)

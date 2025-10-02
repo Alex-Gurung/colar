@@ -347,17 +347,24 @@ Question: {} Let's think step by step:
         # print(f"   Question decoded (sample 0): '{self.tokenizer.decode(question_input_ids[0], skip_special_tokens=False)[:200]}...'")
         # print(f"   Question embedding norms: {question_embeds.norm(dim=-1)[0][:10].tolist()}")
 
-        outputs = self.llm.forward(
+        base_model = getattr(self.llm, "model", getattr(self.llm, "transformer", None))
+        if base_model is None:
+            raise RuntimeError("Could not find base model submodule (tried .model and .transformer)")
+
+        outputs = base_model(
             inputs_embeds=question_embeds,
             attention_mask=question_attention_mask,
             position_ids=question_position_ids,
             output_hidden_states=need_hidden_states,
             use_cache=True,
+            return_dict=True,
         )
 
         # DEBUG: Check initial LLM output
         # print(f"   Initial LLM logits shape: {outputs.logits.shape}")
-        initial_probs = torch.softmax(outputs.logits[0, -1], dim=-1)
+        question_token_hidden = outputs.last_hidden_state[:, -1, :]
+        initial_logits = self.llm.lm_head(question_token_hidden)
+        initial_probs = torch.softmax(initial_logits[0], dim=-1)
         top_initial = torch.topk(initial_probs, 5)
         initial_tokens = [self.tokenizer.decode([tid]) for tid in top_initial.indices]
         # print(f"   Initial top tokens: {list(zip(initial_tokens, top_initial.values.tolist()))}")
@@ -414,18 +421,20 @@ Question: {} Let's think step by step:
             current_position_ids = current_position_ids + not_is_done_long
             n_latent_forward += not_is_done_long
 
-            outputs = self.llm.forward(
+            outputs = base_model(
                 inputs_embeds=current_inputs_embeds,
                 attention_mask=all_attention_mask,
                 position_ids=current_position_ids,
                 past_key_values=past_key_values,
                 output_hidden_states=need_hidden_states,
                 use_cache=True,
+                return_dict=True,
             )
             past_key_values = outputs.past_key_values
             # print(f"past_key_values: {past_key_values}")
 
-            last_logits = outputs.logits[:, -1]
+            current_last_hidden = outputs.last_hidden_state[:, -1, :]
+            last_logits = self.llm.lm_head(current_last_hidden)
             probs = torch.softmax(last_logits / latent_generation_config.get("eol_temperature", 1.0), dim=-1)
             batch_next_token = torch.multinomial(probs, num_samples=1)  # [n, 1]
 
