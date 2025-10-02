@@ -104,7 +104,7 @@ trainer:
   strategy: deepspeed_stage_2_offload
   # strategy: deepspeed_stage_3_offload
   enable_model_summary: false
-  check_val_every_n_epoch: None
+  check_val_every_n_epoch: 1
   # strategy: deepspeed_stage_2
   # strategy: ddp
     # class_path: lightning.pytorch.strategies.FSDPStrategy
