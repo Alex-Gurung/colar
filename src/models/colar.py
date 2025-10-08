@@ -860,6 +860,7 @@ class LitCoLaR(LitCoTModelBase):
         print(f"gt_answer: {gt_answer}")
         print(f"n_latent_forward: {n_latent_forward}")
         unique_question_strings = list(set(question_strings))
+        print(f"number of pred answers: {len(pred_answers)}")
         print(f"number of unique question strings: {len(unique_question_strings)}")
         num_unique_question_strings = len(unique_question_strings)
         if num_unique_question_strings > 1:
