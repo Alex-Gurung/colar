@@ -24,6 +24,9 @@ except Exception:
 
 import pickle
 
+
+from prompt_utils import generate_next_chapter_messages
+
 with open("/mnt/disk/new_nrl_ncp/prompt_to_datapoint_with_baseline_ppl_qwen7B_cpu_new.pkl", "rb") as f:
     prompt_to_datapoint_with_baseline_ppl = pickle.load(f)
     
