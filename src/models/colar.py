@@ -1245,7 +1245,7 @@ class LitCoLaR(LitCoTModelBase):
             o_length = (o_ids != self.tokenizer.pad_token_id).sum().item()
             acc = 0
             reward = 0
-            self.model_kwargs.do_rl
+            if self.model_kwargs.do_rl:
                 # calculate reward
                 # pass
                 question_strings = questions
