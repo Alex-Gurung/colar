@@ -1249,11 +1249,11 @@ class LitCoLaR(LitCoTModelBase):
                 # calculate reward
                 # pass
                 question_strings = [q]
-                print(f"questions: {question_strings}")
-                print(f"o_str: {o_str}")
-                print(f"answer: {a}")
-                print(f"len(question_strings): {len(question_strings)}")
-                x = 1/0
+                # print(f"questions: {question_strings}")
+                # print(f"o_str: {o_str}")
+                # print(f"answer: {a}")
+                # print(f"len(question_strings): {len(question_strings)}")
+                # x = 1/0
                 rewards = get_r_refs(question_strings, [o_str], self.baseline_llm, self.tokenizer, len(question_strings))
                 rewards = rewards[0]
                 self.sample_logs[i]["reward"].append(rewards)
@@ -1277,12 +1277,14 @@ class LitCoLaR(LitCoTModelBase):
         mean_acc = np.mean(all_acc)
         mean_n_latent_forward = np.mean(all_latent_forward)
         mean_output_length = np.mean(all_output_length)
+        mean_reward = np.mean(all_reward)
 
         res = {
-            # "monitor": mean_acc,
+            "monitor": mean_reward,
             f"{split}/acc": mean_acc,
             f"{split}/n_latent_forward": mean_n_latent_forward,
             f"{split}/n_latent_forward_on_acc": mean_n_latent_forward_on_acc,
             f"{split}/output_length": mean_output_length,
+            f"{split}/reward": mean_reward,
         }
         return res
