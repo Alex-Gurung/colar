@@ -426,8 +426,8 @@ Question: {} Let's think step by step:
             current_position_ids = current_position_ids + not_is_done_long
             n_latent_forward += not_is_done_long
 
-            print(f"inside latent generate, input_embeds shape: {current_inputs_embeds.shape}")
-            print(f"inside latent generate, past_key_values: {past_key_values}")
+            # print(f"inside latent generate, input_embeds shape: {current_inputs_embeds.shape}")
+            # print(f"inside latent generate, past_key_values: {past_key_values}")
 
             outputs = base_model(
                 inputs_embeds=current_inputs_embeds,

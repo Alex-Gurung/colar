@@ -1255,7 +1255,7 @@ class LitCoLaR(LitCoTModelBase):
                 # print(f"len(question_strings): {len(question_strings)}")
                 # x = 1/0
                 rewards = get_r_refs(question_strings, [o_str], self.baseline_llm, self.tokenizer, len(question_strings))
-                rewards = rewards[0]
+                rewards = rewards[0].item()
                 self.sample_logs[i]["reward"].append(rewards)
             else:
                 pred_a = self.extract_answer_from_output(o_str)
