@@ -24,6 +24,8 @@ except Exception:
 
 import pickle
 
+from typing import List, Tuple, Optional
+
 
 from .prompt_utils import generate_next_chapter_messages
 
@@ -108,7 +110,7 @@ def randomly_select_datapoint(cur_datapoint):
     random_datapoint = random.choice(datapoints_from_different_story)
     return random_datapoint
 
-def convert_loss_to_reward(loss: float, baseline_ppl: float = None):
+def convert_loss_to_reward(loss: float, baseline_ppl: Optional[float] = None):
     # note baseline_ppl could be either ppl or loss
     reward = -loss
     if USE_PPL:
@@ -118,6 +120,7 @@ def convert_loss_to_reward(loss: float, baseline_ppl: float = None):
         reward = (baseline_ppl - reward) / baseline_ppl * 100
     return reward
 
+@torch.no_grad()
 def calculate_reward(question_string, original_model_response, tokenizer, remote_reward_model, random_datapoint):
     datapoint, prior_story_text = find_datapoint_from_sequence(question_string, tokenizer)
     print(f"sanity check: {datapoint['story_id']}")
@@ -125,15 +128,14 @@ def calculate_reward(question_string, original_model_response, tokenizer, remote
 
     attention_mask = next_chapter_tokens.ne(tokenizer.pad_token_id)
     num_actions = next_chapter_tokens.size(-1)
-    loss = remote_reward_model.async_run_method(
-        method_name="forward",
-        sequences=next_chapter_tokens,
-        attention_mask=attention_mask,
-        labels=labels,
-        return_loss=True,
-    )
-    loss = ray.get(loss)
-    reward = convert_loss_to_reward(loss[0], baseline_ppl)
+    with torch.no_grad():
+        outputs = remote_reward_model(
+            input_ids=next_chapter_tokens.to(remote_reward_model.device),
+            attention_mask=attention_mask.to(remote_reward_model.device),
+            labels=labels.to(remote_reward_model.device),
+        )
+        loss = outputs.loss.cpu().item()
+    reward = convert_loss_to_reward(loss, baseline_ppl)
     print(f"reward from loss: {reward}")
 
     if SUBTRACT_RANDOM_BASELINE:
@@ -144,15 +146,14 @@ def calculate_reward(question_string, original_model_response, tokenizer, remote
         # get loss from random datapoint
         random_next_chapter_tokens, random_labels = make_message_data_from_datapoint_and_model_response(random_datapoint, model_response, tokenizer)
         random_attention_mask = random_next_chapter_tokens.ne(tokenizer.pad_token_id)
-        random_loss = remote_reward_model.async_run_method(
-            method_name="forward",
-            sequences=random_next_chapter_tokens,
-            attention_mask=random_attention_mask,
-            labels=random_labels,
-            return_loss=True,
-        )
-        random_loss = ray.get(random_loss)
-        random_reward = convert_loss_to_reward(random_loss[0], random_baseline_ppl)
+        with torch.no_grad():
+            outputs = remote_reward_model(
+                input_ids=random_next_chapter_tokens.to(remote_reward_model.device),
+                attention_mask=random_attention_mask.to(remote_reward_model.device),
+                labels=random_labels.to(remote_reward_model.device),
+            )
+        random_loss = outputs.loss.cpu().item()
+        random_reward = convert_loss_to_reward(random_loss, random_baseline_ppl)
         print(f"reward from random datapoint: {random_reward}")
         reward -= random_reward * RANDOM_BASELINE_WEIGHTING
     print(f"final reward: {reward}")
@@ -1089,7 +1090,8 @@ class LitCoLaR(LitCoTModelBase):
         
             # accuracies[i] = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
         rewards = get_r_refs(question_strings, pred_answers, self.baseline_llm, self.tokenizer, len(pred_answers))
-
+        rewards = torch.stack(rewards, dim=0)
+        print(f"rewards.shape: {rewards.shape}")
         if rl_config.punish_latent_length:
             rewards /= n_latent_forward.unsqueeze(1)
 
