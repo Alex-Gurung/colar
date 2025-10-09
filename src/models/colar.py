@@ -25,7 +25,7 @@ except Exception:
 import pickle
 
 from typing import List, Tuple, Optional
-
+import numpy as np
 
 from .prompt_utils import generate_next_chapter_messages
 
