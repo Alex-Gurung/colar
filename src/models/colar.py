@@ -1248,9 +1248,10 @@ class LitCoLaR(LitCoTModelBase):
             if self.model_kwargs.do_rl:
                 # calculate reward
                 # pass
-                question_strings = questions
-                print(f"question_strings: {question_strings}")
+                question_strings = [q]
+                print(f"questions: {question_strings}")
                 print(f"o_str: {o_str}")
+                print(f"answer: {a}")
                 print(f"len(question_strings): {len(question_strings)}")
                 x = 1/0
                 rewards = get_r_refs(question_strings, [o_str], self.baseline_llm, self.tokenizer, len(question_strings))
