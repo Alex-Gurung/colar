@@ -105,7 +105,7 @@ def randomly_select_datapoint(cur_datapoint):
     random_datapoint = random.choice(datapoints_from_different_story)
     return random_datapoint
 
-def convert_loss_to_reward(loss: float, baseline_ppl: Optional[float] = None):
+def convert_loss_to_reward(loss: float, baseline_ppl: float = None):
     # note baseline_ppl could be either ppl or loss
     reward = -loss
     if USE_PPL:
