@@ -192,12 +192,16 @@ Question: {} Let's think step by step:
             else:
                 loss_dict = {}
 
+        # UNCOMMENT FOR RL TRAINING
         # Evaluate the generation of the model on the validation data
-        # generation_dict = self.eval_generation(batch=batch, split="val", batch_idx=batch_idx, dataloader_idx=dataloader_idx)
+        if self.model_kwargs.rl_config.use_rl:
+            generation_dict = self.eval_generation(batch=batch, split="val", batch_idx=batch_idx, dataloader_idx=dataloader_idx)
+        else:
+            generation_dict = {}
 
         # Combine loss and generation metrics
-        # log_dict = {**loss_dict, **generation_dict}
-        log_dict = loss_dict
+        log_dict = {**loss_dict, **generation_dict}
+        # log_dict = loss_dict
 
         self.log_dict(
             log_dict,
@@ -582,260 +586,6 @@ Question: {} Let's think step by step:
 
         return res
 
-    # @torch.no_grad()
-    # def latent_generate(
-    #     self,
-    #     questions,
-    #     rl_mode=False,
-    #     return_latent_hidden_states=False,  # for evaluation
-    #     _disable_microbatch: bool = False,  # internal guard (do not set from outside)
-    # ):
-    #     # ---------- MICROBATCH WRAPPER (minimal changes) ----------
-    #     lgc = self.model_kwargs.latent_generation_config
-    #     # micro_bs = int(lgc.get("eval_microbatch_size", 0) or 0)
-    #     micro_bs = 1
-
-    #     if not _disable_microbatch and micro_bs > 0 and len(questions) > micro_bs:
-    #         # split into chunks and call ourselves with microbatching disabled
-    #         def _chunks(lst, n):
-    #             for i in range(0, len(lst), n):
-    #                 yield lst[i:i+n]
-
-    #         # utilities to pad/concat results across variable lengths
-    #         def _pad_cat_long_2d(tensors, pad_value):
-    #             # tensors: list of [b_i, L_i] Long
-    #             # returns [B, L_max]
-    #             seqs = [t if t.dim() == 2 else t.view(1, -1) for t in tensors]
-    #             # pad_sequence works on list of [L] or [L, *], so do per-row
-    #             rows = []
-    #             for t in seqs:
-    #                 for r in t: rows.append(r)
-    #             padded = pad_sequence(rows, batch_first=True, padding_value=pad_value)
-    #             B = sum(t.shape[0] for t in seqs)
-    #             return padded.view(B, -1)
-
-    #         def _pad_cat_float_3d(tensors, pad_value=0.0):
-    #             # tensors: list of [b_i, T_i, H] Float
-    #             # returns [B, T_max, H]
-    #             rows = []
-    #             for t in tensors:
-    #                 if t.numel() == 0:
-    #                     # create a 1x0xH row to keep shape (we'll pad later)
-    #                     H = tensors[0].shape[-1]
-    #                     t = t.new_zeros((t.shape[0], 0, H))
-    #                 for r in t: rows.append(r)  # [T,H]
-    #             # pad sequence on T dimension
-    #             padded = pad_sequence(rows, batch_first=True, padding_value=pad_value)  # [B, T_max, H]
-    #             return padded
-
-    #         def _pad_cat_float_4d(tensors, pad_value=0.0):
-    #             # tensors: list of [b_i, L, T_i, H] Float
-    #             # pad on T dimension and concat on batch
-    #             if not tensors:
-    #                 return torch.empty(0)
-    #             L = tensors[0].shape[1]
-    #             H = tensors[0].shape[-1]
-    #             rows = []
-    #             for t in tensors:
-    #                 # split into per-batch [L, T_i, H]
-    #                 for r in t:
-    #                     rows.append(r)  # [L, T_i, H]
-    #             # we need to pad each layer independently on T, then stack back
-    #             # transpose to layer-major lists
-    #             per_layer = [[] for _ in range(L)]
-    #             for r in rows:
-    #                 for l in range(L):
-    #                     per_layer[l].append(r[l])  # [T_i, H]
-    #             padded_layers = []
-    #             for l in range(L):
-    #                 padded_L = pad_sequence(per_layer[l], batch_first=True, padding_value=pad_value)  # [B, T_max, H]
-    #                 padded_layers.append(padded_L.unsqueeze(1))  # [B,1,T_max,H]
-    #             out = torch.cat(padded_layers, dim=1)  # [B,L,T_max,H]
-    #             return out
-
-    #         all_pred, all_nlat = [], []
-    #         all_q_ids, all_q_m = [], []
-    #         all_lat_inp, all_lat_m = [], []
-    #         all_lat_hs = []
-
-    #         pad_id = self.tokenizer.pad_token_id if getattr(self, "tokenizer", None) else 0
-    #         dev = self.device
-
-    #         for chunk in _chunks(questions, micro_bs):
-    #             res = self.latent_generate(
-    #                 chunk,
-    #                 rl_mode=rl_mode,
-    #                 return_latent_hidden_states=return_latent_hidden_states,
-    #                 _disable_microbatch=True,
-    #             )
-    #             if rl_mode:
-    #                 q_ids, q_msk, lat_inp, lat_msk, ans_hash = res
-    #                 all_q_ids.append(q_ids.to(dev))
-    #                 all_q_m.append(q_msk.to(dev))
-    #                 all_lat_inp.append(lat_inp.to(dev))
-    #                 all_lat_m.append(lat_msk.to(dev))
-    #                 all_pred.append(ans_hash.to(dev))
-    #             else:
-    #                 if return_latent_hidden_states:
-    #                     pred_ids, n_latent_forward, lat_hs = res
-    #                     all_pred.append(pred_ids.to(dev))
-    #                     all_nlat.append(n_latent_forward.to(dev))
-    #                     all_lat_hs.append(lat_hs.to(dev))
-    #                 else:
-    #                     pred_ids, n_latent_forward = res
-    #                     all_pred.append(pred_ids.to(dev))
-    #                     all_nlat.append(n_latent_forward.to(dev))
-
-    #         if rl_mode:
-    #             q_ids_cat = _pad_cat_long_2d(all_q_ids, pad_id)
-    #             q_msk_cat = _pad_cat_long_2d(all_q_m, 0)
-    #             lat_inp_cat = _pad_cat_float_3d(all_lat_inp, 0.0)
-    #             lat_msk_cat = _pad_cat_long_2d(all_lat_m, 0)
-    #             ans_cat = _pad_cat_long_2d(all_pred, pad_id)
-    #             return q_ids_cat, q_msk_cat, lat_inp_cat, lat_msk_cat, ans_cat
-
-    #         if return_latent_hidden_states:
-    #             pred_cat = _pad_cat_long_2d(all_pred, pad_id)
-    #             nlat_cat = torch.cat(all_nlat, dim=0).view(-1, 1) if all_nlat else torch.empty(0, 1, dtype=torch.long, device=dev)
-    #             hs_cat   = _pad_cat_float_4d(all_lat_hs, 0.0)
-    #             return pred_cat, nlat_cat, hs_cat
-
-    #         pred_cat = _pad_cat_long_2d(all_pred, pad_id)
-    #         nlat_cat = torch.cat(all_nlat, dim=0).view(-1, 1) if all_nlat else torch.empty(0, 1, dtype=torch.long, device=dev)
-    #         return pred_cat, nlat_cat
-    #     # ---------- END MICROBATCH WRAPPER ----------
-
-    #     # ================== ORIGINAL BODY (unchanged) ==================
-    #     latent_generation_config = self.model_kwargs.latent_generation_config
-    #     answer_generation_config = self.model_kwargs.answer_generation_config
-    #     max_n_latent_forward = latent_generation_config.max_n_latent_forward
-    #     latent_temperature = latent_generation_config.get("latent_temperature", 1.0)
-
-    #     batch_size = len(questions)
-    #     n_latent_forward = torch.zeros(size=(batch_size, 1), device=self.device, dtype=torch.long)
-    #     all_inputs_embeds = []
-
-    #     # 1: question forward
-    #     # question: [pad, question, speed, ###]
-    #     speed = latent_generation_config["compression_factor"]
-    #     suffix = self.speed_template.format(speed) + self.thinking_separator
-
-    #     question_input_ids, question_attention_mask = self.prepare_inputs(
-    #         questions,
-    #         padding_side="left",
-    #         part="question",
-    #         suffix=suffix,
-    #     )
-    #     question_position_ids = get_position_ids_from_attention_mask(question_attention_mask)
-    #     question_embeds = self.embedding(question_input_ids)
-    #     outputs = self.llm.forward(
-    #         inputs_embeds=question_embeds,
-    #         attention_mask=question_attention_mask,
-    #         position_ids=question_position_ids,
-    #         output_hidden_states=True,
-    #     )
-    #     all_inputs_embeds.append(question_embeds)
-
-    #     # 2: latent forward
-    #     all_attention_mask = question_attention_mask
-    #     current_position_ids = question_position_ids[:, -1:]
-    #     past_key_values = outputs.past_key_values
-    #     is_done = torch.zeros(size=(batch_size, 1), device=self.device, dtype=torch.bool)
-
-    #     return_latent_inputs_embeds = []
-    #     return_latent_attention_mask = []
-    #     all_latent_hidden_states = []
-
-    #     for _ in range(max_n_latent_forward):
-    #         if return_latent_hidden_states:
-    #             all_latent_hidden_states.append(torch.stack(outputs.hidden_states, dim=1)[:, :, -1:, :])
-    #         distributions = self.latent_policy.forward(
-    #             outputs.hidden_states[-1][:, -1:, :], temperature=latent_temperature
-    #         )
-    #         current_inputs_embeds = distributions.rsample() * (self.embeds_std)
-
-    #         # DEBUG: Check if latent policy is generating reasonable embeddings
-    #         if _ == 0:  # Only log first iteration
-    #             print(f"🔍 LATENT POLICY DEBUG:")
-    #             print(f"   embeds_std: {self.embeds_std}")
-    #             print(f"   distribution mean: {distributions.mean.mean().item():.6f}")
-    #             print(f"   distribution std: {distributions.scale.mean().item():.6f}")
-    #             print(f"   sampled embedding norm: {current_inputs_embeds.norm().item():.6f}")
-    #             print(f"   sampled embedding sample: {current_inputs_embeds[0, 0, :5].tolist()}")
-    #         return_latent_inputs_embeds.append(current_inputs_embeds)
-    #         all_inputs_embeds.append(current_inputs_embeds)
-
-    #         not_is_done_long = (~is_done).long()
-    #         all_attention_mask = torch.cat([all_attention_mask, not_is_done_long], dim=1)
-    #         return_latent_attention_mask.append(not_is_done_long)
-
-    #         current_position_ids = current_position_ids + not_is_done_long
-    #         n_latent_forward += not_is_done_long
-
-    #         outputs = self.llm.forward(
-    #             inputs_embeds=current_inputs_embeds,
-    #             attention_mask=all_attention_mask,
-    #             position_ids=current_position_ids,
-    #             past_key_values=past_key_values,
-    #             output_hidden_states=True,
-    #         )
-    #         past_key_values = outputs.past_key_values
-
-    #         last_logits = outputs.logits[:, -1]
-    #         probs = torch.softmax(last_logits / latent_generation_config.get("eol_temperature", 1.0), dim=-1)
-    #         batch_next_token = torch.multinomial(probs, num_samples=1)  # [n, 1]
-
-    #         is_eol = batch_next_token == self.thinking_separator_id
-    #         is_done = is_done | is_eol
-    #         if is_done.all():
-    #             break
-
-    #     # 3: add end of thinking
-    #     end_of_thinking_ids = (
-    #         torch.ones(size=(batch_size, 1), device=self.device, dtype=torch.long) * self.thinking_separator_id
-    #     )
-    #     end_of_thinking_embeds = self.embedding(end_of_thinking_ids)
-    #     all_inputs_embeds.append(end_of_thinking_embeds)
-    #     all_attention_mask = torch.cat(
-    #         [all_attention_mask, torch.ones(size=(batch_size, 1), device=self.device, dtype=torch.long)], dim=1
-    #     )
-
-    #     # 4: answer generation
-    #     all_inputs_embeds = torch.cat(all_inputs_embeds, dim=1)
-    #     pred_ids = self.llm.generate(
-    #         inputs_embeds=all_inputs_embeds, attention_mask=all_attention_mask, **answer_generation_config
-    #     )
-
-    #     if rl_mode:
-    #         res = (
-    #             question_input_ids,
-    #             question_attention_mask,
-    #             torch.cat(return_latent_inputs_embeds, dim=1) if len(return_latent_inputs_embeds) > 0
-    #                 else torch.empty(batch_size, 0, all_inputs_embeds.shape[-1], device=self.device),
-    #             torch.cat(return_latent_attention_mask, dim=1) if len(return_latent_attention_mask) > 0
-    #                 else torch.empty(batch_size, 0, dtype=torch.long, device=self.device),
-    #             torch.cat(
-    #                 [
-    #                     torch.ones(size=(batch_size, 1), device=self.device, dtype=torch.long)
-    #                     * self.thinking_separator_id,
-    #                     pred_ids,
-    #                 ],
-    #                 dim=1,
-    #             ),
-    #         )
-    #     elif return_latent_hidden_states:
-    #         res = (
-    #             pred_ids,
-    #             n_latent_forward,
-    #             torch.cat(all_latent_hidden_states, dim=2) if len(all_latent_hidden_states) > 0
-    #                 else torch.zeros(batch_size, len(outputs.hidden_states), 0, outputs.hidden_states[-1].shape[-1], device=self.device),
-    #         )
-    #     else:
-    #         res = (pred_ids, n_latent_forward)
-
-    #     return res
-
-
     @torch.no_grad()
     def fixed_length_latent_generate(self, questions: List[str]):
         max_n_latent_forward = 6  # this is the hyper-parameter used in Coconut and distill
@@ -946,6 +696,7 @@ Question: {} Let's think step by step:
         all_acc = []
         all_output_length = []
         all_latent_forward = []
+        all_reward = []
         for i, q, s, a, o_ids, o_str, nlf in zip(
             indices, questions, steps, answers, outputs_token_ids, output_strings, n_latent_forward
         ):
@@ -960,18 +711,26 @@ Question: {} Let's think step by step:
                 self.sample_logs[i]["n_latent_forward"] = []
                 self.sample_logs[i]["acc"] = []
 
-            pred_a = self.extract_answer_from_output(o_str)
-            acc = self.verify_answer(gt_answer=a, pred_answer=pred_a)
+            # check if in RL mode
             o_length = (o_ids != self.tokenizer.pad_token_id).sum().item()
-            self.sample_logs[i]["pred_answer"].append(pred_a)
-            self.sample_logs[i]["output_string"].append(o_str)
-            self.sample_logs[i]["output_length"].append(o_length)
-            self.sample_logs[i]["n_latent_forward"].append(nlf.item())
-            self.sample_logs[i]["acc"].append(acc)
+            acc = 0
+            reward = 0
+            if self.model_kwargs.rl_config.use_rl:
+                # calculate reward
+                pass
+            else:
+                pred_a = self.extract_answer_from_output(o_str)
+                acc = self.verify_answer(gt_answer=a, pred_answer=pred_a)
+                self.sample_logs[i]["pred_answer"].append(pred_a)
+                self.sample_logs[i]["output_string"].append(o_str)
+                self.sample_logs[i]["output_length"].append(o_length)
+                self.sample_logs[i]["n_latent_forward"].append(nlf.item())
+                self.sample_logs[i]["acc"].append(acc)
 
             all_acc.append(acc)
             all_output_length.append(o_length)
             all_latent_forward.append(nlf.item())
+            all_reward.append(reward)
 
         acc_count = sum(all_acc)
         acc_forward_count = sum([a * alf for a, alf in zip(all_acc, all_latent_forward)])
