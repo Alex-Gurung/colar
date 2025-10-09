@@ -194,7 +194,7 @@ Question: {} Let's think step by step:
 
         # UNCOMMENT FOR RL TRAINING
         # Evaluate the generation of the model on the validation data
-        if self.model_kwargs.rl_config.use_rl:
+        if self.model_kwargs.do_rl:
             generation_dict = self.eval_generation(batch=batch, split="val", batch_idx=batch_idx, dataloader_idx=dataloader_idx)
         else:
             generation_dict = {}
@@ -715,7 +715,7 @@ Question: {} Let's think step by step:
             o_length = (o_ids != self.tokenizer.pad_token_id).sum().item()
             acc = 0
             reward = 0
-            if self.model_kwargs.rl_config.use_rl:
+            if self.model_kwargs.do_rl:
                 # calculate reward
                 pass
             else:
