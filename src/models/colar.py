@@ -134,7 +134,7 @@ def calculate_reward(question_string, original_model_response, tokenizer, remote
             attention_mask=attention_mask.to(remote_reward_model.device),
             labels=labels.to(remote_reward_model.device),
         )
-        loss = outputs.loss.cpu().item()
+        loss = outputs.loss.cpu()
     reward = convert_loss_to_reward(loss, baseline_ppl)
     print(f"reward from loss: {reward}")
 
@@ -152,7 +152,7 @@ def calculate_reward(question_string, original_model_response, tokenizer, remote
                 attention_mask=random_attention_mask.to(remote_reward_model.device),
                 labels=random_labels.to(remote_reward_model.device),
             )
-        random_loss = outputs.loss.cpu().item()
+        random_loss = outputs.loss.cpu()
         random_reward = convert_loss_to_reward(random_loss, random_baseline_ppl)
         print(f"reward from random datapoint: {random_reward}")
         reward -= random_reward * RANDOM_BASELINE_WEIGHTING
