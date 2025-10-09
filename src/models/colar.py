@@ -181,8 +181,8 @@ def get_r_refs(question_strings, pred_answers, remote_reward_model, tokenizer, n
         prior_story_to_group_idx = {}
         question_string = question_strings[0]
 
-        assert len(question_strings) == 1
         for i, model_response in enumerate(pred_answers):
+            question_string = question_strings[i]
             datapoint, prior_story_text = find_datapoint_from_sequence(question_string, tokenizer)
             if prior_story_text not in prior_story_to_random_datapoint:
                 prior_story_to_random_datapoint[prior_story_text] = randomly_select_datapoint(datapoint)
@@ -205,10 +205,11 @@ def get_r_refs(question_strings, pred_answers, remote_reward_model, tokenizer, n
     count_seen_from_group = {}
     overall_start_time = time.time()
     question_string = question_strings[0]
-    assert len(question_strings) == 1
+    # assert len(question_strings) == 1
     for i, model_response in enumerate(pred_answers):
         # group_idx = i // n_samples_per_prompt
         # random_datapoint = group_to_random[group_idx]
+        question_string = question_strings[i]
         datapoint, prior_story_text = find_datapoint_from_sequence(question_string, tokenizer)
         group_idx = prior_story_to_group_idx[prior_story_text]
         count_seen_from_group[group_idx] = count_seen_from_group.get(group_idx, 0) + 1
@@ -1065,8 +1066,8 @@ class LitCoLaR(LitCoTModelBase):
         print(f"number of unique question strings: {len(unique_question_strings)}")
         num_unique_question_strings = len(unique_question_strings)
         print(f"len(question_strings): {len(question_strings)}")
-        if len(question_strings) > 1:
-            x = 1/0
+        # if len(question_strings) > 1:
+        #     x = 1/0
         # if num_unique_question_strings > 1:
         #     x = 1/0
         #     never happens
