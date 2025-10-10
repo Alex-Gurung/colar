@@ -107,7 +107,6 @@ trainer:
   # check_val_every_n_epoch: 1
   # val_check_interval: 0.0
   val_check_interval: 0.2
-  save_top_k: 1
   # strategy: deepspeed_stage_2
   # strategy: ddp
     # class_path: lightning.pytorch.strategies.FSDPStrategy
@@ -133,3 +132,16 @@ dataloader:
   pin_memory: True
   persistent_workers: True
   drop_last: True
+
+
+callbacks:
+  - target: lightning.pytorch.callbacks.ModelCheckpoint
+    params:
+      dirpath: ${paths.checkpoints}           # where to save
+      monitor: "val/reward"                     # <-- use your exact logged key
+      mode: "min"                             # "max" if monitoring accuracy, etc.
+      save_top_k: 1                           # keep only the single best
+      filename: "best"                        # stable name
+      auto_insert_metric_name: False          # because key has a slash
+      enable_version_counter: False           # overwrite instead of best-v1,v2...
+      save_last: False                        # (optional) don't also keep last.ckpt
