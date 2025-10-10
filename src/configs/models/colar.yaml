@@ -136,11 +136,7 @@ dataloader:
 
 callbacks:
   - target: lightning.pytorch.callbacks.ModelCheckpoint
-    params:
-      monitor: "val/reward"                     # <-- use your exact logged key
-      mode: "max"                             # "max" if monitoring accuracy, etc.
-      save_top_k: 1                           # keep only the single best
-      filename: "best"                        # stable name
-      auto_insert_metric_name: False          # because key has a slash
-      enable_version_counter: False           # overwrite instead of best-v1,v2...
-      save_last: False                        # (optional) don't also keep last.ckpt
+    monitor: val/reward    # <-- use your exact logged key
+    mode: max            # or "max" for accuracy etc.
+    save_top_k: 1        # keep exactly one best checkpoint
+    filename: best       # optional: stable filename
