@@ -107,6 +107,7 @@ trainer:
   # check_val_every_n_epoch: 1
   # val_check_interval: 0.0
   val_check_interval: 0.2
+  save_top_k: 1
   # strategy: deepspeed_stage_2
   # strategy: ddp
     # class_path: lightning.pytorch.strategies.FSDPStrategy
