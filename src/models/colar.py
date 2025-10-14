@@ -952,6 +952,16 @@ class LitCoLaR(LitCoTModelBase):
         rl_config = self.model_kwargs.rl_config
         questions = batch["question"]
         answers = batch["answer"]
+
+        if isinstance(questions, tuple):
+            questions = list(questions)
+        elif isinstance(questions, str):
+            questions = [questions]
+
+        if isinstance(answers, tuple):
+            answers = list(answers)
+        elif isinstance(answers, str):
+            answers = [answers] * len(questions)
         self.replay_buffer.clear()
         optimizer = self.optimizers()
 
@@ -1200,7 +1210,17 @@ class LitCoLaR(LitCoTModelBase):
         indices = batch["idx"].tolist()
         questions = batch["question"]
         answers = batch["answer"]
-        steps = batch["steps"]
+        raw_steps = batch.get("steps", None)
+
+        if isinstance(raw_steps, list):
+            if len(raw_steps) == len(questions):
+                steps = raw_steps
+            else:
+                steps = (raw_steps + [""] * len(questions))[:len(questions)]
+        elif isinstance(raw_steps, str):
+            steps = [raw_steps] * len(questions)
+        else:
+            steps = [""] * len(questions)
 
         # print(f"questions: {questions}")
         print(f"len(questions): {len(questions)}")
@@ -1262,7 +1282,6 @@ class LitCoLaR(LitCoTModelBase):
                 self.sample_logs[i]["output_string"].append(o_str)
                 self.sample_logs[i]["output_length"].append(o_length)
                 self.sample_logs[i]["n_latent_forward"].append(nlf.item())
-                self.sample_logs[i]["reward"].append(reward)
             else:
                 # pred_a = self.extract_answer_from_output(o_str)
                 # acc = self.verify_answer(gt_answer=a, pred_answer=pred_a)
