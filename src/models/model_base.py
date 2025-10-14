@@ -242,8 +242,40 @@ Question: {} Let's think step by step:
         )
 
     def on_test_end(self):
-        self.json_logger.log(self.sample_logs)
+        merged_logs = self._gather_sample_logs(self.sample_logs)
+        if merged_logs is not None:
+            self.json_logger.log(merged_logs)
         return super().on_test_end()
+
+    def _gather_sample_logs(self, local_logs):
+        if not (dist.is_available() and dist.is_initialized()):
+            return local_logs
+
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
+
+        gathered = [None for _ in range(world_size)]
+        dist.all_gather_object(gathered, local_logs)
+
+        if rank != 0:
+            return None
+
+        merged = {}
+        for shard in gathered:
+            if not shard:
+                continue
+            for key, value in shard.items():
+                if key not in merged:
+                    merged[key] = value
+                else:
+                    for subkey, subval in value.items():
+                        if subkey not in merged[key]:
+                            merged[key][subkey] = subval
+                        elif isinstance(subval, list):
+                            merged[key][subkey].extend(subval)
+                        else:
+                            merged[key][subkey] = subval
+        return merged
 
     # -- basic methods implemenration ends --#
 
