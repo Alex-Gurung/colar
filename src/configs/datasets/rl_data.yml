@@ -1,0 +1,5 @@
+data_module:
+    target: src.datasets.rl_data.ConvertedRLDataModule
+    dataset_name: colar_rl_data
+    tiny_dataset: False
+    epoch_scaling: 1
