@@ -589,9 +589,35 @@ class LitCoLaR(LitCoTModelBase):
             raise ValueError("max_compression_factor should be int or str")
         # 0: prepare inputs
         question = batch["question"]
-        steps = batch["steps"]
+        steps = batch.get("steps", None)
         answer = batch["answer"]
+
+        if isinstance(question, tuple):
+            question = list(question)
+        elif isinstance(question, str):
+            question = [question]
         batch_size = len(question)
+
+        if isinstance(answer, tuple):
+            answer = list(answer)
+        elif isinstance(answer, str):
+            answer = [answer] * batch_size
+
+        if isinstance(steps, list):
+            if len(steps) == batch_size:
+                steps = steps
+            elif len(steps) == 1:
+                steps = steps * batch_size
+            else:
+                steps = (steps + [""] * batch_size)[:batch_size]
+        elif isinstance(steps, tuple):
+            steps = list(steps)
+            if len(steps) != batch_size:
+                steps = (steps + [""] * batch_size)[:batch_size]
+        elif isinstance(steps, str):
+            steps = [steps] * batch_size
+        else:
+            steps = [""] * batch_size
 
         # Detailed logging for data inspection
         if not hasattr(self, '_batch_count'):
