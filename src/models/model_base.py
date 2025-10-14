@@ -3,6 +3,7 @@ from collections import defaultdict, OrderedDict
 from os.path import join as opj
 from typing import List
 import torch
+import torch.distributed as dist
 import lightning.pytorch as pl
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 from transformers.optimization import get_cosine_schedule_with_warmup, get_constant_schedule_with_warmup
