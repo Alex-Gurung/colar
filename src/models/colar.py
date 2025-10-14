@@ -1257,9 +1257,17 @@ class LitCoLaR(LitCoTModelBase):
                 rewards = get_r_refs(question_strings, [o_str], self.baseline_llm, self.tokenizer, len(question_strings))
                 reward = rewards[0].item()
                 self.sample_logs[i]["reward"].append(reward)
+                self.sample_logs[i]["acc"].append(0.0)
+                self.sample_logs[i]["pred_answer"].append(o_str)
+                self.sample_logs[i]["output_string"].append(o_str)
+                self.sample_logs[i]["output_length"].append(o_length)
+                self.sample_logs[i]["n_latent_forward"].append(nlf.item())
+                self.sample_logs[i]["reward"].append(reward)
             else:
-                pred_a = self.extract_answer_from_output(o_str)
-                acc = self.verify_answer(gt_answer=a, pred_answer=pred_a)
+                # pred_a = self.extract_answer_from_output(o_str)
+                # acc = self.verify_answer(gt_answer=a, pred_answer=pred_a)
+                pred_a = o_str
+                acc = 0.0
                 self.sample_logs[i]["pred_answer"].append(pred_a)
                 self.sample_logs[i]["output_string"].append(o_str)
                 self.sample_logs[i]["output_length"].append(o_length)
