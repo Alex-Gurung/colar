@@ -70,10 +70,10 @@ model:
 
   training_kwargs:
     optimizer:
-      target: torch.optim.AdamW
-      # target: deepspeed.ops.adam.DeepSpeedCPUAdam 
-      lr: 1e-4  # set to 1e-6 for rl, this for sft
-      # lr: 5e-7
+      # target: torch.optim.AdamW
+      target: deepspeed.ops.adam.DeepSpeedCPUAdam 
+      # lr: 1e-4  # set to 1e-6 for rl, this for sft
+      lr: 5e-7
       weight_decay: 0.01
         # gradient_clipping: 1.0
     # use_scheduler: False
@@ -98,10 +98,10 @@ trainer:
   # max_epochs: 1
   # accumulate_grad_batches: 16 # with 8 gpus
   # accumulate_grad_batches: 32 # 32 acc * 4 gpu * 1 batch size = 128
-  accumulate_grad_batches: 12 # 32 acc * 4 gpu * 1 batch size = 128
+  # accumulate_grad_batches: 12 # 32 acc * 4 gpu * 1 batch size = 128
   # accumulate_grad_batches: 8
-  # accumulate_grad_batches: 1 # needed for RL
-  strategy: ddp
+  accumulate_grad_batches: 1 # needed for RL
+  strategy: deepspeed_stage_2_offload
   # strategy: deepspeed_stage_3_offload
   enable_model_summary: false
   # check_val_every_n_epoch: 1
