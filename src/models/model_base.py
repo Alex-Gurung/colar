@@ -63,7 +63,7 @@ Question: {} Let's think step by step:
             self.question_template = "Question: {} Let's think step by step:"
         self.speed_template = "(Thinking speed: {})"
         # self.thinking_separator = "###"
-        self.thinking_separator = "\n"
+        self.thinking_separator = "\n\n"
         # self.thinking_separator_id = self.tokenizer.convert_tokens_to_ids(self.thinking_separator)
         self.thinking_separator_id = self.tokenizer.encode(self.thinking_separator)[0]
         self.steps_template = "{}"
