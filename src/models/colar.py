@@ -1130,7 +1130,12 @@ class LitCoLaR(LitCoTModelBase):
         #     question_string = question_strings[i]
         
             # accuracies[i] = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
-        rewards = get_r_refs(question_strings, pred_answers, self.baseline_llm, self.tokenizer, len(pred_answers))
+        # rewards = get_r_refs(question_strings, pred_answers, self.baseline_llm, self.tokenizer, len(pred_answers))
+        print(f"question_strings: {question_strings}")
+        print(f"pred_answers: {pred_answers}")
+        print(f"len(question_strings): {len(question_strings)}")
+        print(f"len(pred_answers): {len(pred_answers)}")
+        x = 1/0
         rewards = torch.stack(rewards, dim=0)
         print(f"rewards.shape: {rewards.shape}")
         if rl_config.punish_latent_length:
