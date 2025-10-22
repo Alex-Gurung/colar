@@ -188,8 +188,13 @@ Question: {} Let's think step by step:
                     "val/loss": val_loss,
                     "val/ce_loss": val_ce_loss,
                     "val/embed_modeling_loss": val_embed_loss,
-                    "val/entropy": val_entropy
+                    "val/entropy": val_entropy,
                 }
+                # Provide a generic "val/reward" only for non-RL runs so
+                # ModelCheckpoint(monitor="val/reward") works during SFT.
+                if not getattr(self.model_kwargs, "do_rl", False):
+                    # In SFT, treat higher reward as lower loss
+                    loss_dict["val/reward"] = -val_loss
             else:
                 loss_dict = {}
 
@@ -202,6 +207,13 @@ Question: {} Let's think step by step:
 
         # Combine loss and generation metrics
         log_dict = {**loss_dict, **generation_dict}
+        # Ensure a stable key for checkpoint monitoring exists
+        if "val/reward" not in log_dict:
+            if "val/acc" in log_dict:
+                log_dict["val/reward"] = log_dict["val/acc"]
+            elif "val/loss" in log_dict:
+                # Higher reward corresponds to lower loss
+                log_dict["val/reward"] = -log_dict["val/loss"]
         # log_dict = loss_dict
 
         self.log_dict(
