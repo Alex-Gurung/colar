@@ -330,7 +330,7 @@ class LitCoLaR(LitCoTModelBase):
         self.baseline_llm = model_class.from_pretrained(model_kwargs.model_id, 
             attn_implementation="flash_attention_3", 
             trust_remote_code=True, 
-            dtype=torch.bfloat16, 
+            torch_dtype=torch.bfloat16, 
             # device_map="auto"
             device_map=None,
             low_cpu_mem_usage=True,

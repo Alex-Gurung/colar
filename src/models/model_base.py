@@ -86,7 +86,7 @@ Question: {} Let's think step by step:
         self.llm = model_class.from_pretrained(llm_path, 
             attn_implementation="flash_attention_3", 
             trust_remote_code=True, 
-            dtype=torch.bfloat16)
+            torch_dtype=torch.bfloat16)
 
         if not model_kwargs.get("set_pad_as_last_token", False):  # not used, but might help
             self.llm.resize_token_embeddings(len(self.tokenizer))
