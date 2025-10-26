@@ -115,8 +115,8 @@ Question: {} Let's think step by step:
                 trainable_params.append(param)
 
         # optimizer = instantiate_from_config(kwargs.optimizer, extra_kwargs={"params": trainable_params})
-        # optimizer = instantiate_from_config(kwargs.optimizer, trainable_params)
-        optimizer = DeepSpeedCPUAdam(trainable_params, lr=kwargs.optimizer.lr, weight_decay=kwargs.optimizer.weight_decay)
+        optimizer = instantiate_from_config(kwargs.optimizer, trainable_params)
+        # optimizer = DeepSpeedCPUAdam(trainable_params, lr=kwargs.optimizer.lr, weight_decay=kwargs.optimizer.weight_decay)
 
         if not kwargs.get("use_scheduler", False):
             return {"optimizer": optimizer}
