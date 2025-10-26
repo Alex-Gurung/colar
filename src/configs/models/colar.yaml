@@ -70,8 +70,8 @@ model:
 
   training_kwargs:
     optimizer:
-      target: torch.optim.AdamW
-      # target: deepspeed.ops.adam.DeepSpeedCPUAdam
+      # target: torch.optim.AdamW
+      target: deepspeed.ops.adam.DeepSpeedCPUAdam 
       lr: 1e-4  # set to 1e-6 for rl, this for sft
       # lr: 5e-7
       weight_decay: 0.01

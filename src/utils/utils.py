@@ -52,20 +52,63 @@ def get_obj_from_str(string, reload=False):
     return getattr(importlib.import_module(module, package=None), cls)
 
 
-def instantiate_from_config(config, extra_kwargs=dict()):
+# def instantiate_from_config(config, extra_kwargs=dict()):
+#     config_dict = dict(config)
+#     if "target" not in config_dict:
+#         raise ValueError(f"target not found in {config}")
+
+#     target_kwargs = copy.deepcopy(config_dict)
+#     target_kwargs.pop("target")
+
+#     for k, v in target_kwargs.items():
+#         if isinstance(v, DictConfig) and "target" in v.keys():
+#             target_kwargs[k] = instantiate_from_config(v)
+#     target_kwargs.update(extra_kwargs)
+
+#     return get_obj_from_str(config_dict["target"])(**target_kwargs)
+
+# utils.py
+# import copy
+# from omegaconf import DictConfig
+
+def instantiate_from_config(config, extra_kwargs=None):
+    # defensive copy
     config_dict = dict(config)
     if "target" not in config_dict:
         raise ValueError(f"target not found in {config}")
 
+    # collect kwargs from the config (except 'target')
     target_kwargs = copy.deepcopy(config_dict)
-    target_kwargs.pop("target")
+    target = target_kwargs.pop("target")
 
-    for k, v in target_kwargs.items():
-        if isinstance(v, DictConfig) and "target" in v.keys():
+    # resolve nested configs
+    for k, v in list(target_kwargs.items()):
+        if isinstance(v, DictConfig) and "target" in v:
             target_kwargs[k] = instantiate_from_config(v)
-    target_kwargs.update(extra_kwargs)
 
-    return get_obj_from_str(config_dict["target"])(**target_kwargs)
+    cls = get_obj_from_str(target)
+
+    # 1) If caller passed a non-dict (e.g. model parameters) -> positional 'params'
+    if extra_kwargs is not None and not isinstance(extra_kwargs, dict):
+        params = extra_kwargs
+        return cls(params, **target_kwargs)
+
+    # 2) Merge keyword overrides if provided
+    if extra_kwargs:
+        target_kwargs.update(extra_kwargs)
+
+    # 3) If 'params' ended up in kwargs, prefer positional (works for DeepSpeedCPUAdam),
+    #    and gracefully fall back to kwarg style (works for torch.optim.*).
+    if "params" in target_kwargs:
+        params = target_kwargs.pop("params")
+        try:
+            return cls(params, **target_kwargs)   # preferred for DS CPUAdam
+        except TypeError:
+            return cls(**{"params": params}, **target_kwargs)
+
+    # 4) No params supplied -> just kwargs
+    return cls(**target_kwargs)
+
 
 
 def dict_apply(x, func):
