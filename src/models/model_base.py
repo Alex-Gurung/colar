@@ -84,7 +84,8 @@ Question: {} Let's think step by step:
 
         # model_class = AutoModelForCausalLM
         self.llm = model_class.from_pretrained(llm_path, 
-            attn_implementation="flash_attention_3", 
+            # attn_implementation="flash_attention_3",
+            attn_implementation="flash_attention_2",
             trust_remote_code=True, 
             torch_dtype=torch.bfloat16)
 
