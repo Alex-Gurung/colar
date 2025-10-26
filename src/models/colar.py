@@ -327,15 +327,16 @@ class LitCoLaR(LitCoTModelBase):
             self.logprob_chunk_size = chunk if chunk > 0 else None
 
         model_class = AutoLigerKernelForCausalLM
-        self.baseline_llm = model_class.from_pretrained(model_kwargs.model_id, 
-            attn_implementation="flash_attention_3", 
-            trust_remote_code=True, 
-            torch_dtype=torch.bfloat16, 
-            # device_map="auto"
-            device_map=None,
-            low_cpu_mem_usage=True,
-        )
-        self.baseline_llm.to(self.device)
+        # FOR VR-CLI
+        # self.baseline_llm = model_class.from_pretrained(model_kwargs.model_id, 
+        #     attn_implementation="flash_attention_3", 
+        #     trust_remote_code=True, 
+        #     torch_dtype=torch.bfloat16, 
+        #     # device_map="auto"
+        #     device_map=None,
+        #     low_cpu_mem_usage=True,
+        # )
+        # self.baseline_llm.to(self.device)
 
         # self.fused_ce_sum = LigerFusedLinearCrossEntropyLoss(reduction="sum")
 
