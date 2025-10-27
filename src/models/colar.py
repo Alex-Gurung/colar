@@ -1137,7 +1137,7 @@ class LitCoLaR(LitCoTModelBase):
         rl_config = self.model_kwargs.rl_config
         group_size = len(pred_answers)
 
-        accuracies = torch.zeros(size=(group_size, 1), device=self.device, dtype=torch.float32)
+        accuracies = torch.zeros(size=(group_size, 1), device=self.device, dtype=torch.float32) + 1
         # for i, pred_answer in enumerate(pred_answers):
         #     # pred_a = self.extract_answer_from_output(pred_answer)
         #     # accuracies[i] = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
