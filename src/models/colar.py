@@ -1168,9 +1168,10 @@ class LitCoLaR(LitCoTModelBase):
         accuracies = torch.zeros(size=(group_size, 1), device=self.device, dtype=torch.float32) + 1
         for i, pred_answer in enumerate(pred_answers):
             # Boxed-based accuracy: compare last \boxed{...} against ground truth using base verifier
-            pred_a = extract_last_boxed(pred_answer)
+            # pred_a = extract_last_boxed(pred_answer)
             # accuracy = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
-            pred_a = float(pred_a)
+            # pred_a = float(pred_a)
+            pred_a = parse_prediction(pred_answer)
             gt_answer = float(gt_answer)
             accuracies[i] = float(pred_a == gt_answer)
 
@@ -1355,9 +1356,9 @@ class LitCoLaR(LitCoTModelBase):
                 # RL validation: choose between reference-model reward and boxed-accuracy reward
                 question_strings = [q]
                 # Compute binary accuracy from last \boxed{...} for logging
-                pred_a = extract_last_boxed(o_str)
+                # pred_a = extract_last_boxed(o_str)
                 # acc = self.verify_answer(gt_answer=a, pred_answer=pred_a)
-                pred_a = float(pred_a)
+                pred_a = parse_prediction(o_str)
                 gt_answer = float(a)
                 acc = float(pred_a == gt_answer)
 
@@ -1377,9 +1378,9 @@ class LitCoLaR(LitCoTModelBase):
                 self.sample_logs[i]["n_latent_forward"].append(nlf.item())
             else:
                 # Non-RL eval: compute accuracy from the last \boxed{...}
-                pred_a = extract_last_boxed(o_str)
+                # pred_a = extract_last_boxed(o_str)
                 # acc = self.verify_answer(gt_answer=a, pred_answer=pred_a)
-                pred_a = float(pred_a)
+                pred_a = parse_prediction(o_str)
                 gt_answer = float(a)
                 acc = float(pred_a == gt_answer)
                 self.sample_logs[i]["pred_answer"].append(pred_a)
