@@ -29,6 +29,23 @@ import numpy as np
 
 from .prompt_utils import generate_next_chapter_messages
 
+BOXED_RE = re.compile(r"\\boxed\{([^}]*)\}", re.IGNORECASE)
+
+
+def extract_last_boxed(text: str) -> str:
+    matches = list(BOXED_RE.finditer(text or ""))
+    if matches:
+        return matches[-1].group(1).strip()
+    return text or ""
+
+
+def parse_prediction(raw_text: str) -> float:
+    candidate = extract_last_boxed(raw_text)
+    candidate = (candidate or raw_text or "").strip().lower()
+    if "yes" in candidate and "no" not in candidate:
+        return 1.0
+    return 0.0
+
 with open("/mnt/disk/new_nrl_ncp/prompt_to_datapoint_with_baseline_ppl_qwen7B_cpu_new.pkl", "rb") as f:
     prompt_to_datapoint_with_baseline_ppl = pickle.load(f)
     
@@ -1138,23 +1155,30 @@ class LitCoLaR(LitCoTModelBase):
         group_size = len(pred_answers)
 
         accuracies = torch.zeros(size=(group_size, 1), device=self.device, dtype=torch.float32) + 1
-        # for i, pred_answer in enumerate(pred_answers):
-        #     # pred_a = self.extract_answer_from_output(pred_answer)
-        #     # accuracies[i] = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
-        #     model_response = pred_answer.split("In summary:")[-1].strip()
-        #     model_response = model_response.split("In summary,")[-1].strip()
-        #     model_response = model_response.split("Detailed Plan:")[-1].strip()
-        #     question_string = question_strings[i]
+        for i, pred_answer in enumerate(pred_answers):
+            # pred_a = self.extract_answer_from_output(pred_answer)
+            # accuracies[i] = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
+            # model_response = pred_answer.split("In summary:")[-1].strip()
+            # model_response = model_response.split("In summary,")[-1].strip()
+            # model_response = model_response.split("Detailed Plan:")[-1].strip()
+            # question_string = question_strings[i]
+            gt_answer = float(gt_answer)
+            pred_answer = parse_prediction(pred_answer)
+            accuracy = float(pred_answer == gt_answer)
+            accuracies[i] = accuracy
+
         
             # accuracies[i] = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
+
         # rewards = get_r_refs(question_strings, pred_answers, self.baseline_llm, self.tokenizer, len(pred_answers))
-        print(f"question_strings: {question_strings}")
-        print(f"pred_answers: {pred_answers}")
-        print(f"len(question_strings): {len(question_strings)}")
-        print(f"len(pred_answers): {len(pred_answers)}")
-        x = 1/0
-        rewards = torch.stack(rewards, dim=0)
-        print(f"rewards.shape: {rewards.shape}")
+        # print(f"question_strings: {question_strings}")
+        # print(f"pred_answers: {pred_answers}")
+        # print(f"len(question_strings): {len(question_strings)}")
+        # print(f"len(pred_answers): {len(pred_answers)}")
+        # x = 1/0
+        rewards = accuracies.detach().clone()
+        # rewards = torch.stack(rewards, dim=0)
+        # print(f"rewards.shape: {rewards.shape}")
         if rl_config.punish_latent_length:
             rewards /= n_latent_forward.unsqueeze(1)
 
