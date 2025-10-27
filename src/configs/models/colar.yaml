@@ -93,8 +93,8 @@ model:
 trainer:
   precision: bf16
   # precision: bf16-mixed
-  # max_epochs: 5
-  max_epochs: 20
+  max_epochs: 5
+  # max_epochs: 20
   # max_epochs: 1
   # accumulate_grad_batches: 16 # with 8 gpus
   # accumulate_grad_batches: 32 # 32 acc * 4 gpu * 1 batch size = 128
