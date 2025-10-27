@@ -1,6 +1,7 @@
 import tqdm
 import random
 import time
+import re
 from typing import List, Tuple
 import torch.nn.functional as F
 import torch
@@ -29,6 +30,7 @@ import numpy as np
 
 from .prompt_utils import generate_next_chapter_messages
 
+# Regex to capture content inside the last \boxed{...}
 BOXED_RE = re.compile(r"\\boxed\{([^}]*)\}", re.IGNORECASE)
 
 
@@ -40,6 +42,10 @@ def extract_last_boxed(text: str) -> str:
 
 
 def parse_prediction(raw_text: str) -> float:
+    """
+    Legacy helper used in earlier experiments to map yes/no to a float.
+    Kept for compatibility. For boxed numeric accuracy use extract_last_boxed + verify_answer.
+    """
     candidate = extract_last_boxed(raw_text)
     candidate = (candidate or raw_text or "").strip().lower()
     if "yes" in candidate and "no" not in candidate:
@@ -55,6 +61,11 @@ USE_BASELINE = True
 SUBTRACT_RANDOM_BASELINE = True
 RANDOM_BASELINE_WEIGHTING = 0.5
 PREDEFINED_RANDOM_CHOICES = False
+
+# Toggle for RL reward computation:
+# - Set to True to use reference-model reward via get_r_refs (kept below)
+# - Set to False to use binary accuracy from the last \boxed{...} as reward
+USE_REFERENCE_REWARD = False
 
 def _ensure_list(obj):
     if obj is None:
@@ -1156,15 +1167,9 @@ class LitCoLaR(LitCoTModelBase):
 
         accuracies = torch.zeros(size=(group_size, 1), device=self.device, dtype=torch.float32) + 1
         for i, pred_answer in enumerate(pred_answers):
-            # pred_a = self.extract_answer_from_output(pred_answer)
-            # accuracies[i] = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
-            # model_response = pred_answer.split("In summary:")[-1].strip()
-            # model_response = model_response.split("In summary,")[-1].strip()
-            # model_response = model_response.split("Detailed Plan:")[-1].strip()
-            # question_string = question_strings[i]
-            gt_answer = float(gt_answer)
-            pred_answer = parse_prediction(pred_answer)
-            accuracy = float(pred_answer == gt_answer)
+            # Boxed-based accuracy: compare last \boxed{...} against ground truth using base verifier
+            pred_a = extract_last_boxed(pred_answer)
+            accuracy = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
             accuracies[i] = accuracy
 
         
@@ -1176,7 +1181,14 @@ class LitCoLaR(LitCoTModelBase):
         # print(f"len(question_strings): {len(question_strings)}")
         # print(f"len(pred_answers): {len(pred_answers)}")
         # x = 1/0
-        rewards = accuracies.detach().clone()
+        # Choose reward mode. To use reference-model reward instead, set USE_REFERENCE_REWARD = True at top.
+        if USE_REFERENCE_REWARD:
+            # Reference-model reward (kept for easy switching):
+            # rewards = get_r_refs(question_strings, pred_answers, self.baseline_llm, self.tokenizer, len(pred_answers))
+            rewards = get_r_refs(question_strings, pred_answers, self.baseline_llm, self.tokenizer, len(pred_answers))
+        else:
+            # Default: reward equals binary accuracy from last \boxed{...}
+            rewards = accuracies.detach().clone()
         # rewards = torch.stack(rewards, dim=0)
         # print(f"rewards.shape: {rewards.shape}")
         if rl_config.punish_latent_length:
@@ -1335,30 +1347,33 @@ class LitCoLaR(LitCoTModelBase):
 
             # check if in RL mode
             o_length = (o_ids != self.tokenizer.pad_token_id).sum().item()
-            acc = 0
-            reward = 0
+            acc = 0.0
+            reward = 0.0
             if self.model_kwargs.do_rl:
-                # calculate reward
-                # pass
+                # RL validation: choose between reference-model reward and boxed-accuracy reward
                 question_strings = [q]
-                # print(f"questions: {question_strings}")
-                # print(f"o_str: {o_str}")
-                # print(f"answer: {a}")
-                # print(f"len(question_strings): {len(question_strings)}")
-                # x = 1/0
-                rewards = get_r_refs(question_strings, [o_str], self.baseline_llm, self.tokenizer, len(question_strings))
-                reward = rewards[0].item()
+                # Compute binary accuracy from last \boxed{...} for logging
+                pred_a = extract_last_boxed(o_str)
+                acc = self.verify_answer(gt_answer=a, pred_answer=pred_a)
+
+                if USE_REFERENCE_REWARD:
+                    # Reference reward path (switch by setting USE_REFERENCE_REWARD=True at top)
+                    rewards = get_r_refs(question_strings, [o_str], self.baseline_llm, self.tokenizer, len(question_strings))
+                    reward = rewards[0].item()
+                else:
+                    # Default: reward equals boxed-accuracy
+                    reward = float(acc)
+
                 self.sample_logs[i]["reward"].append(reward)
-                self.sample_logs[i]["acc"].append(0.0)
-                self.sample_logs[i]["pred_answer"].append(o_str)
+                self.sample_logs[i]["acc"].append(acc)
+                self.sample_logs[i]["pred_answer"].append(pred_a)
                 self.sample_logs[i]["output_string"].append(o_str)
                 self.sample_logs[i]["output_length"].append(o_length)
                 self.sample_logs[i]["n_latent_forward"].append(nlf.item())
             else:
-                # pred_a = self.extract_answer_from_output(o_str)
-                # acc = self.verify_answer(gt_answer=a, pred_answer=pred_a)
-                pred_a = o_str
-                acc = 0.0
+                # Non-RL eval: compute accuracy from the last \boxed{...}
+                pred_a = extract_last_boxed(o_str)
+                acc = self.verify_answer(gt_answer=a, pred_answer=pred_a)
                 self.sample_logs[i]["pred_answer"].append(pred_a)
                 self.sample_logs[i]["output_string"].append(o_str)
                 self.sample_logs[i]["output_length"].append(o_length)
