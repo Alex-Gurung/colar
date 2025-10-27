@@ -1333,6 +1333,7 @@ class LitCoLaR(LitCoTModelBase):
         all_output_length = []
         all_latent_forward = []
         all_reward = []
+        all_total_generated = []
         for i, q, s, a, o_ids, o_str, nlf in zip(
             indices, questions, steps, answers, outputs_token_ids, output_strings, n_latent_forward
         ):
@@ -1392,6 +1393,7 @@ class LitCoLaR(LitCoTModelBase):
             all_acc.append(acc)
             all_output_length.append(o_length)
             all_latent_forward.append(nlf.item())
+            all_total_generated.append(o_length + nlf.item())
             all_reward.append(reward)
 
         acc_count = sum(all_acc)
@@ -1400,6 +1402,7 @@ class LitCoLaR(LitCoTModelBase):
         mean_acc = np.mean(all_acc)
         mean_n_latent_forward = np.mean(all_latent_forward)
         mean_output_length = np.mean(all_output_length)
+        mean_total_generated = np.mean(all_total_generated)
         mean_reward = np.mean(all_reward)
 
         res = {
@@ -1408,6 +1411,7 @@ class LitCoLaR(LitCoTModelBase):
             f"{split}/n_latent_forward": mean_n_latent_forward,
             f"{split}/n_latent_forward_on_acc": mean_n_latent_forward_on_acc,
             f"{split}/output_length": mean_output_length,
+            f"{split}/total_generated_tokens": mean_total_generated,
             f"{split}/reward": mean_reward,
         }
         return res

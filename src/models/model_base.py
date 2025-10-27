@@ -583,6 +583,25 @@ Question: {} Let's think step by step:
         input_length = all_inputs_embeds.shape[1]
         output_length = pred_ids.shape[1]
 
+        # Heuristic check: does generate() include the input tokens (question + end-of-thinking) in pred_ids?
+        # Note: latent embeddings are not discrete tokens, so the expected prefix is only the
+        # question_input_ids followed by the thinking separator token.
+        try:
+            q_len = question_input_ids.shape[1]
+            prefix_len = q_len + 1  # question tokens + '###'
+            includes_input_vec = None
+            if output_length >= prefix_len:
+                same_q = (pred_ids[:, :q_len] == question_input_ids).all(dim=1)
+                same_sep = (pred_ids[:, q_len:q_len+1] == self.thinking_separator_id).all(dim=1)
+                includes_input_vec = (same_q & same_sep)
+                includes_input_rate = includes_input_vec.float().mean().item()
+                print(f"   DETECT: generate() includes input prefix (question+###) for ~{includes_input_rate:.2f} of batch; q_len={q_len}, prefix_len={prefix_len}, pred_len={output_length}")
+            else:
+                print(f"   DETECT: pred_len({output_length}) < prefix_len({prefix_len}); treating pred_ids as new-only tokens")
+        except Exception as _e:
+            # Keep generation robust even if shapes/devices differ
+            print(f"   DETECT: prefix-compare failed ({type(_e).__name__}); skipping include-input check")
+
         if pred_ids.shape[1] > 0:
             decoded_full = self.tokenizer.batch_decode(pred_ids, skip_special_tokens=False)
             # print(f"   Full output (sample 0): '{decoded_full[0][:200]}{'...' if len(decoded_full[0]) > 200 else ''}'")
@@ -759,6 +778,7 @@ Question: {} Let's think step by step:
         all_output_length = []
         all_latent_forward = []
         all_reward = []
+        all_total_generated = []
         for i, q, s, a, o_ids, o_str, nlf in zip(
             indices, questions, steps, answers, outputs_token_ids, output_strings, n_latent_forward
         ):
@@ -792,6 +812,7 @@ Question: {} Let's think step by step:
             all_acc.append(acc)
             all_output_length.append(o_length)
             all_latent_forward.append(nlf.item())
+            all_total_generated.append(o_length + nlf.item())
             all_reward.append(reward)
 
         acc_count = sum(all_acc)
@@ -800,6 +821,7 @@ Question: {} Let's think step by step:
         mean_acc = np.mean(all_acc)
         mean_n_latent_forward = np.mean(all_latent_forward)
         mean_output_length = np.mean(all_output_length)
+        mean_total_generated = np.mean(all_total_generated)
 
         res = {
             # "monitor": mean_acc,
@@ -807,6 +829,7 @@ Question: {} Let's think step by step:
             f"{split}/n_latent_forward": mean_n_latent_forward,
             f"{split}/n_latent_forward_on_acc": mean_n_latent_forward_on_acc,
             f"{split}/output_length": mean_output_length,
+            f"{split}/total_generated_tokens": mean_total_generated,
         }
         return res
 
