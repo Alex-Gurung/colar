@@ -41,7 +41,7 @@ class ConvertedSFTDataModule(pl.LightningDataModule):
         self.dataset_name = dataset_name
         # self.dataset_dir = Path("/mnt/disk/baseline_colar/converted_sft_data")
         # self.dataset_dir = Path("/mnt/disk/baseline_colar/musr_data")
-        self.dataset_dir = Path("/mnt/disk/baseline_colar/ff_data")
+        self.dataset_dir = Path("/mnt/disk/baseline_colar/ff_data_chat")
         self.tiny_dataset = tiny_dataset
         self.epoch_scaling = epoch_scaling
         self.all_config = all_config
