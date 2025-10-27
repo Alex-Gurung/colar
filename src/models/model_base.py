@@ -714,10 +714,26 @@ Question: {} Let's think step by step:
         return float(gt_answer == pred_answer)
 
     def eval_generation(self, batch, split="val", batch_idx=None, dataloader_idx=0):
-        indices = batch["idx"].tolist()
-        questions = batch["question"]
-        answers = batch["answer"]
-        steps = batch["steps"]
+        def _ensure_list(obj):
+            if obj is None:
+                return []
+            if isinstance(obj, torch.Tensor):
+                return obj.detach().cpu().tolist()
+            if isinstance(obj, list):
+                return obj
+            if isinstance(obj, tuple):
+                return list(obj)
+            if isinstance(obj, str):
+                return [obj]
+            try:
+                return list(obj)
+            except Exception:
+                return [obj]
+
+        indices = [int(x) for x in _ensure_list(batch.get("idx"))]
+        questions = _ensure_list(batch.get("question"))
+        answers = _ensure_list(batch.get("answer"))
+        steps = _ensure_list(batch.get("steps"))
 
         # print(f"questions: {questions}")
         print(f"len(questions): {len(questions)}")
