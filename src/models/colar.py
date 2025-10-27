@@ -1169,8 +1169,10 @@ class LitCoLaR(LitCoTModelBase):
         for i, pred_answer in enumerate(pred_answers):
             # Boxed-based accuracy: compare last \boxed{...} against ground truth using base verifier
             pred_a = extract_last_boxed(pred_answer)
-            accuracy = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
-            accuracies[i] = accuracy
+            # accuracy = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
+            pred_a = float(pred_a)
+            gt_answer = float(gt_answer)
+            accuracies[i] = float(pred_a == gt_answer)
 
         
             # accuracies[i] = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
@@ -1354,7 +1356,10 @@ class LitCoLaR(LitCoTModelBase):
                 question_strings = [q]
                 # Compute binary accuracy from last \boxed{...} for logging
                 pred_a = extract_last_boxed(o_str)
-                acc = self.verify_answer(gt_answer=a, pred_answer=pred_a)
+                # acc = self.verify_answer(gt_answer=a, pred_answer=pred_a)
+                pred_a = float(pred_a)
+                gt_answer = float(a)
+                acc = float(pred_a == gt_answer)
 
                 if USE_REFERENCE_REWARD:
                     # Reference reward path (switch by setting USE_REFERENCE_REWARD=True at top)
@@ -1373,7 +1378,10 @@ class LitCoLaR(LitCoTModelBase):
             else:
                 # Non-RL eval: compute accuracy from the last \boxed{...}
                 pred_a = extract_last_boxed(o_str)
-                acc = self.verify_answer(gt_answer=a, pred_answer=pred_a)
+                # acc = self.verify_answer(gt_answer=a, pred_answer=pred_a)
+                pred_a = float(pred_a)
+                gt_answer = float(a)
+                acc = float(pred_a == gt_answer)
                 self.sample_logs[i]["pred_answer"].append(pred_a)
                 self.sample_logs[i]["output_string"].append(o_str)
                 self.sample_logs[i]["output_length"].append(o_length)
