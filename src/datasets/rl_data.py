@@ -16,7 +16,7 @@ class ConvertedRLDataset(Dataset):
                 "question": d["question"],
                 "answer": d["answer"],
                 "steps": d["steps"],
-                "n_steps": len(d["steps"].split('\n')) if d["steps"] else 0,
+                "n_steps": len(d["steps"].split('\n\n')) if d["steps"] else 0,
             }
         self.all_indices = list(self.data.keys())
         self.indices = copy.deepcopy(self.all_indices)
