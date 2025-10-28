@@ -54,8 +54,8 @@ model:
       clip_grad_norm: 1.0
       clip_eps: 0.2
       use_latent_loss: True
-      # use_answer_loss: True
-      use_answer_loss: False
+      use_answer_loss: True
+      # use_answer_loss: False
       # n_train_samples_per_epoch: 512  # better divisible to total_batch_size
       # exp_batch_size: 8
       # group_size: 8
@@ -71,8 +71,8 @@ model:
 
   training_kwargs:
     optimizer:
-      # target: torch.optim.AdamW
-      target: deepspeed.ops.adam.DeepSpeedCPUAdam 
+      target: torch.optim.AdamW
+      # target: deepspeed.ops.adam.DeepSpeedCPUAdam 
       # lr: 1e-4  # set to 1e-6 for rl, this for sft
       lr: 5e-7
       weight_decay: 0.01
@@ -108,8 +108,8 @@ trainer:
   # accumulate_grad_batches: 8
   
   accumulate_grad_batches: 1 # needed for RL
-  # strategy: ddp
-  strategy: deepspeed_stage_2_offload
+  strategy: ddp
+  # strategy: deepspeed_stage_2_offload
   enable_model_summary: false
   # check_val_every_n_epoch: 1
   # val_check_interval: 0.0
