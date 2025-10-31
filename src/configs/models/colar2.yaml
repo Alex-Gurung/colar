@@ -1,0 +1,146 @@
+seed: ~
+
+# Note: This file copies colar.yaml and applies GRPO-aligned changes.
+# All changes are annotated with "CHANGED:" comments for clarity.
+
+model:
+  target: src.models.colar.LitCoLaR
+  model_kwargs:
+    # model_id: Llama-3.2-1B-Instruct
+    model_id: Qwen/Qwen2.5-7B-Instruct
+    # model_id: DeepSeek-R1-Distill-Qwen-1.5B
+    sft_method: colar
+    # chat_template: False
+    chat_template: True
+
+    do_lora: False 
+    # lora_config:
+      # do_lora: True
+      # lora_config:
+      # r: 128
+      # lora_alpha: 32
+
+
+    latent_cot_config:
+      ce_weight: 1
+      embed_modeling_weight: 1
+      embed_modeling_loss: mse  # {nll, mse}
+      entropy_weight: 0
+      pred_embed_forward_weight: 0
+      max_compression_factor: 5
+      pred_compressed_cot: True
+      sqrt_mean: True
+    
+    latent_policy_config:
+      lp_determinisitc: False
+      # lp_intermediate_size: 2048
+      lp_intermediate_size: 3584
+
+    latent_generation_config:
+      max_n_latent_forward: 64
+      latent_temperature: 1.0
+      compression_factor: 5
+    
+    answer_generation_config:
+      max_new_tokens: 2048
+      do_sample: True
+      top_p: 0.9
+      temperature: 1.0
+
+    # CHANGED: Enable RL for GRPO training
+    do_rl: True
+    rl_config:
+      # Keep per-token averaging disabled unless you prefer per-token means
+      average_per_token_loss: False
+      random_speed_in_group: False
+      filter_dataset: False
+      punish_latent_length: False
+      clip_grad_norm: 1.0
+      clip_eps: 0.2
+      use_latent_loss: True
+      use_answer_loss: True
+
+      # CHANGED: match OpenRLHF --n_samples_per_prompt=16
+      group_size: 16
+
+      # CHANGED: align with MICRO_TRAIN_BATCH_SIZE=2
+      exp_batch_size: 2
+
+      # CHANGED: use full train set per epoch (290 items) for GRPO RL loop
+      # This value controls how many train samples the RL loop draws per epoch
+      # and is used when computing warmup_steps below.
+      n_train_samples_per_epoch: 290
+
+      # Optional memory-saving logprob chunking (leave commented if not needed)
+      # logprob_chunk_size: 32
+
+  training_kwargs:
+    optimizer:
+      target: torch.optim.AdamW
+      # CHANGED: actor LR to match GRPO script (5e-7)
+      lr: 5e-7
+      weight_decay: 0.01
+        # gradient_clipping: 1.0
+    # use_scheduler: False
+    # scheduler:
+    #   target: constant_schedule_with_warmup
+    #   warmup_steps: 1000
+    use_scheduler: True
+    scheduler:
+      target: cosine_with_min_lr
+      # CHANGED: warmup steps for 10% of training, using 290 train items and 30 epochs
+      # warmup_steps = 0.1 * 30 * 290 * (approx factor for RL inner updates)
+      # Approx set to 1740 as in prior runs (2 * 290 * 30 * 0.1 = 1740)
+      warmup_steps: 1740
+      lr_scheduler_kwargs:
+        min_lr_rate: 0.1
+
+trainer:
+  precision: bf16
+  # max_epochs: 5
+  # max_epochs: 20
+
+  # CHANGED: align with GRPO "episodes" notion (NUM_EPISODES ≈ 30)
+  max_epochs: 30
+
+  # accumulate_grad_batches: 16 # with 8 gpus
+  # accumulate_grad_batches: 32 # 32 acc * 4 gpu * 1 batch size = 128
+  
+  # accumulate_grad_batches: 12 # 32 acc * 4 gpu * 1 batch size = 128 (was for SFT)
+  
+  # accumulate_grad_batches: 8
+  
+  accumulate_grad_batches: 1 # needed for RL
+  strategy: ddp
+  enable_model_summary: false
+
+  # CHANGED: evaluate every ~16 train steps to mirror --eval_steps 16
+  val_check_interval: 16
+
+  # Optionally override wandb project/group here (defaults exist in trainer/default.yaml)
+  # logger:
+  #   project: flawed_fictions_rl  # CHANGED: match GRPO script project name
+  #   group: grpo_flawed_fictions  # CHANGED: optional grouping
+
+dataloader:
+  # CHANGED: Set global batch such that per-GPU batch becomes 3 with 4 GPUs.
+  # run.py divides this global value by num devices, so 12 / 4 = 3 per GPU.
+  # With group_size=16, you get ~48 rollouts per step (3 * 16).
+  batch_size: 12
+
+  # CHANGED: keep validation throughput similar
+  val_batch_size: 12
+
+  num_workers: 64
+  pin_memory: True
+  persistent_workers: True
+  drop_last: True
+
+
+callbacks:
+  - target: lightning.pytorch.callbacks.ModelCheckpoint
+    monitor: val/reward    # monitor RL reward
+    mode: max              # larger reward is better
+    save_top_k: 1          # keep exactly one best checkpoint
+    filename: best         # stable filename
+
