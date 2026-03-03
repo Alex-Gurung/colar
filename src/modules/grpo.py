@@ -14,6 +14,10 @@ class Experience:
     latent_logprobs: torch.Tensor = None
     answer_logprobs: torch.Tensor = None
 
+    # Reference logprobs for KL divergence computation (optional, used with reference reward)
+    ref_latent_logprobs: Optional[torch.Tensor] = None
+    ref_answer_logprobs: Optional[torch.Tensor] = None
+
     question_input_ids: torch.Tensor = None
     question_attention_mask: torch.Tensor = None
     latent_inputs_embeds: torch.Tensor = None

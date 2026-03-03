@@ -1,0 +1,6 @@
+data_module:
+  target: src.datasets.rl_data.ConvertedRLDataModule
+  dataset_name: gsm  # or math, etc.
+  dataset_dir: ~  # REQUIRED: set via CLI, e.g. dataset_dir=/path/to/data
+  tiny_dataset: False
+  epoch_scaling: 1
