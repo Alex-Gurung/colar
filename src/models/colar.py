@@ -1,6 +1,6 @@
 import tqdm
 import random
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import torch.nn.functional as F
 import torch
 from torch.nn.utils import clip_grad_norm_
@@ -11,6 +11,61 @@ from ..modules.projector import LatentPolicy
 from ..modules import grpo
 from ..utils.utils import get_position_ids_from_attention_mask, sample_indices_from_attention_mask_3d
 from ..utils.constants import MODEL_EMB_STD
+
+# Optional: LigerKernel fused linear cross-entropy (avoids materializing [B*T, V] logits).
+try:
+    from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
+    _HAS_LIGER_CE = True
+except ImportError:
+    _HAS_LIGER_CE = False
+
+
+def ce_on_selected_tokens(
+    last_hidden: torch.Tensor,     # [B, T, D]
+    labels: torch.Tensor,          # [B, T]  (-100 = ignore)
+    lm_head,                       # nn.Linear
+    chunk_size: Optional[int] = None,
+    use_fused: bool = True,
+) -> torch.Tensor:
+    """
+    Compute CE loss only on positions where labels != -100.
+    Optionally uses LigerKernel fused linear+CE to avoid materializing full logit tensors.
+    Falls back to standard torch CE if fused is unavailable.
+    """
+    mask = labels.ne(-100)
+    if not mask.any():
+        return last_hidden.new_zeros(())
+
+    sel_states = last_hidden[mask]  # [N, D]
+    sel_labels = labels[mask].long()
+
+    N = sel_states.size(0)
+    loss_sum = sel_states.new_zeros(())
+
+    do_fused = use_fused and _HAS_LIGER_CE
+    if do_fused:
+        fused_ce_sum = LigerFusedLinearCrossEntropyLoss(reduction="sum")
+
+    weight = lm_head.weight if do_fused else None
+    bias = getattr(lm_head, "bias", None) if do_fused else None
+
+    step = N if (chunk_size is None or chunk_size <= 0) else chunk_size
+
+    for i in range(0, N, step):
+        j = i + step
+        s = sel_states[i:j]
+        y = sel_labels[i:j]
+
+        if do_fused:
+            if bias is None:
+                loss_sum = loss_sum + fused_ce_sum(weight, s, y)
+            else:
+                loss_sum = loss_sum + fused_ce_sum(weight, s, y, bias)
+        else:
+            logits = lm_head(s)
+            loss_sum = loss_sum + F.cross_entropy(logits.float(), y, reduction="sum")
+
+    return loss_sum / float(N)
 
 
 class LitCoLaR(LitCoTModelBase):
@@ -30,8 +85,46 @@ class LitCoLaR(LitCoTModelBase):
         )
         self.embeds_std = MODEL_EMB_STD[model_kwargs.model_id]
 
+        # Freeze base LLM if requested (train only latent_policy + embeddings for new tokens)
+        if model_kwargs.get("freeze_base_llm", False):
+            self._freeze_base_llm_parameters()
+
         if model_kwargs.do_rl:
             self.init_rl()
+
+        # Optional: chunked logprob computation for memory-constrained runs
+        rl_cfg = getattr(self.model_kwargs, "rl_config", None)
+        chunk = getattr(rl_cfg, "logprob_chunk_size", None) if rl_cfg else None
+        self.logprob_chunk_size = int(chunk) if chunk and int(chunk) > 0 else None
+
+    def _freeze_base_llm_parameters(self):
+        """Freeze LLM parameters, keeping latent_policy and newly-added token embeddings trainable."""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        original_vocab_size = getattr(self.llm.config, 'vocab_size', len(self.tokenizer) - 10)
+        current_vocab_size = self.llm.get_input_embeddings().weight.shape[0]
+        added_tokens = current_vocab_size > original_vocab_size
+
+        frozen_count = 0
+        trainable_count = 0
+
+        for name, param in self.named_parameters():
+            if name.startswith('llm.'):
+                if added_tokens and 'embed_tokens' in name:
+                    param.requires_grad = True
+                    trainable_count += param.numel()
+                else:
+                    param.requires_grad = False
+                    frozen_count += param.numel()
+            else:
+                param.requires_grad = True
+                trainable_count += param.numel()
+
+        logger.info(
+            f"Frozen LLM: {frozen_count:,} frozen, {trainable_count:,} trainable "
+            f"({frozen_count / (frozen_count + trainable_count) * 100:.1f}% frozen)"
+        )
 
     # ++ basic methods implemenration begins ++#
     def limit_rl_train_epoch_length(self):
@@ -59,10 +152,12 @@ class LitCoLaR(LitCoTModelBase):
 
     # ++ sft implementation begins ++#
     def sft_training_step(self, batch, batch_idx, dataloader_idx=0):
-        log_dict = self.forward(batch=batch)
-        log_dict = {f'train/{k}': v for k, v in log_dict.items()}
+        out = self.forward(batch=batch)
+        loss = out["total_loss"]
+
+        log_dict = {f'train/{k}': (v.detach() if isinstance(v, torch.Tensor) else v) for k, v in out.items()}
         self.log_dict(log_dict, sync_dist=True, prog_bar=True, batch_size=len(batch['idx']))
-        return log_dict['train/total_loss']
+        return loss
 
     def forward(self, batch):
         latent_cot_config = self.model_kwargs.latent_cot_config
@@ -157,7 +252,6 @@ class LitCoLaR(LitCoTModelBase):
             compressed_steps_inputs_embeds /= compressed_steps_attention_mask.unsqueeze(-1) + 1e-5
             compressed_steps_attention_mask = (compressed_steps_attention_mask != 0).long()
             compressed_steps_labels = padded_steps_input_ids.reshape(batch_size, compressed_steps_length, r)
-            # rand_steps_indices = torch.randint(0, r, (batch_size, compressed_steps_length, 1), device=steps_input_ids.device)
             rand_steps_indices = sample_indices_from_attention_mask_3d(
                 padded_steps_attention_mask.view(batch_size, compressed_steps_length, r)
             )
@@ -188,14 +282,28 @@ class LitCoLaR(LitCoTModelBase):
         labels[labels == self.tokenizer.pad_token_id] = -100
         labels[:, :question_length] = -100
 
-        outputs = self.llm.forward(
-            inputs_embeds=inputs_embeds,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            labels=labels,
-            output_hidden_states=True,
-        )
-        ce_loss = outputs.loss
+        # Use fused CE if enabled, otherwise standard HF labels-based CE
+        use_fused_ce = self.model_kwargs.get("use_fused_ce", False) and _HAS_LIGER_CE
+        if use_fused_ce:
+            outputs = self.llm.forward(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                output_hidden_states=True,
+            )
+            ce_loss = ce_on_selected_tokens(
+                outputs.hidden_states[-1], labels, self.llm.lm_head,
+                chunk_size=self.logprob_chunk_size,
+            )
+        else:
+            outputs = self.llm.forward(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                labels=labels,
+                output_hidden_states=True,
+            )
+            ce_loss = outputs.loss
 
         # latent loss
         steps_outputs = outputs.hidden_states[-1][:, question_length : question_length + steps_length, :]
