@@ -3,3 +3,4 @@ data_module:
   dataset_name: converted_sft
   tiny_dataset: False
   epoch_scaling: 1
+  dataset_dir: /mnt/disk/baseline_colar/coconut_ff_data

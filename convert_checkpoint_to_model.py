@@ -12,7 +12,7 @@ Outputs:
 - format=hf: a HuggingFace directory for the LLM; non-LLM modules are saved to extra_state.pt
 
 Example:
-  python scripts/convert_checkpoint_to_model.py \
+  python convert_checkpoint_to_model.py \
       --ckpt /path/to/logs/.../checkpoints/epoch1__step451__monitor3.139.ckpt/ \
       --out out/model-export \
       --format hf
@@ -21,59 +21,13 @@ Example:
 from __future__ import annotations
 
 import argparse
-import gc
 import json
-import os
 from pathlib import Path
 import torch
 
 from omegaconf import OmegaConf
 
-def _normalize_key(k: str) -> str:
-    if k.startswith("latent_policy."): return k
-    if not k.startswith("llm."): k = "llm." + k
-    if k.startswith("llm.model.model."):
-        k = "llm.model." + k[len("llm.model.model."):]
-    if k == "llm.embedding.weight":
-        k = "llm.model.embed_tokens.weight"
-    return k
-
-
-# from run import load_weights_memory_safe
-def load_weights_memory_safe(model, load_path: str, cast_bf16: bool = True) -> str:
-    # Prefer HF shards (lowest peak). If not present, fall back to DS model file.
-    if os.path.isdir(load_path):
-        try:
-            if _rank0():
-                msg = load_hf_shards_inplace(model, load_path, cast_bf16=cast_bf16)
-            _broadcast_model_from_rank0(model)
-            return msg if _rank0() else "HF shards received via broadcast"
-        except Exception:
-            # maybe it's an epoch dir without index.json; try DS file
-            pass
-        if _rank0():
-            msg = load_ds_states_weights_only(model, load_path, cast_bf16=cast_bf16)
-        _broadcast_model_from_rank0(model)
-        return msg if _rank0() else "DS weights received via broadcast"
-    else:
-        # Single Lightning .ckpt with 'state_dict' → filter weights only
-        try:
-            from omegaconf import DictConfig
-            torch.serialization.add_safe_globals([DictConfig])
-        except Exception: pass
-        blob = torch.load(load_path, map_location="cpu", weights_only=False)
-        sd = blob["state_dict"] if isinstance(blob, dict) and "state_dict" in blob else blob
-        target = model.state_dict()
-        keep = {}
-        for k, v in sd.items():
-            nk = _normalize_key(k)
-            if nk in target and target[nk].shape == v.shape:
-                keep[nk] = v.to(torch.bfloat16) if (cast_bf16 and torch.is_floating_point(v)) else v
-        missing, unexpected = model.load_state_dict(keep, strict=False)
-        del blob, sd, keep; gc.collect()
-        return f"Single-file weights loaded (missing={len(missing)}, unexpected={len(unexpected)})"
-
-
+from run import load_weights_memory_safe
 from src.utils.utils import instantiate_from_config
 
 

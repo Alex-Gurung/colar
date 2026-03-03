@@ -1,3 +1,0 @@
-kubectl cp ~/.ssh/id_ed25519 $1:/root/.ssh/id_ed25519 
-kubectl cp ~/.ssh/id_ed25519.pub $1:/root/.ssh/id_ed25519.pub 
-

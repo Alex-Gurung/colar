@@ -1,0 +1,69 @@
+seed: ~
+
+model:
+  target: src.models.colar.LitCoLaR
+  model_kwargs:
+    model_id: Qwen/Qwen3-4B-Instruct-2507
+    sft_method: colar
+    chat_template: True
+
+    do_lora: False
+
+    latent_cot_config:
+      ce_weight: 1
+      embed_modeling_weight: 1
+      embed_modeling_loss: mse
+      entropy_weight: 0
+      pred_embed_forward_weight: 0
+      max_compression_factor: 5
+      pred_compressed_cot: True
+      sqrt_mean: True
+
+    latent_policy_config:
+      lp_determinisitc: False
+      lp_intermediate_size: 2560  # matches Qwen3-4B hidden_size
+
+    latent_generation_config:
+      max_n_latent_forward: 64
+      latent_temperature: 1.0
+      compression_factor: 5
+
+    answer_generation_config:
+      max_new_tokens: 2048
+      do_sample: True
+      top_p: 0.9
+      temperature: 1.0
+
+    do_rl: False
+
+  training_kwargs:
+    optimizer:
+      target: torch.optim.AdamW
+      lr: 5e-5
+      weight_decay: 0.01
+    use_scheduler: False
+
+trainer:
+  precision: bf16
+  max_epochs: 5
+  accumulate_grad_batches: 4  # effective batch = 4 * 4 = 16
+  strategy: auto
+  enable_model_summary: false
+  val_check_interval: 0.5
+
+dataloader:
+  batch_size: 4
+  val_batch_size: 4
+  num_workers: 4
+  pin_memory: True
+  persistent_workers: True
+  drop_last: True
+
+callbacks:
+  - target: lightning.pytorch.callbacks.ModelCheckpoint
+    monitor: val/loss
+    mode: min
+    save_top_k: 0
+    save_last: True
+  - target: src.callbacks.HFCheckpoint
+    monitor: val/loss

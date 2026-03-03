@@ -15,13 +15,9 @@ from ..modules import grpo
 from ..utils.utils import get_position_ids_from_attention_mask, sample_indices_from_attention_mask_3d
 from ..utils.constants import MODEL_EMB_STD
 
-try:
-    from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
-    _HAS_LIGER = True
-    _FUSED_CE_SUM = LigerFusedLinearCrossEntropyLoss(reduction="sum")  # sum now, mean later
-except Exception:
-    _HAS_LIGER = False
-    _FUSED_CE_SUM = None
+from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
+_HAS_LIGER = True
+_FUSED_CE_SUM = LigerFusedLinearCrossEntropyLoss(reduction="sum")  # sum now, mean later
 
 import pickle
 
@@ -52,9 +48,11 @@ def parse_prediction(raw_text: str) -> float:
         return 1.0
     return 0.0
 
-with open("/mnt/disk/new_nrl_ncp/prompt_to_datapoint_with_baseline_ppl_qwen7B_cpu_new.pkl", "rb") as f:
-    prompt_to_datapoint_with_baseline_ppl = pickle.load(f)
-    
+try:
+    with open("/mnt/disk/new_nrl_ncp/prompt_to_datapoint_with_baseline_ppl_qwen7B_cpu_new.pkl", "rb") as f:
+        prompt_to_datapoint_with_baseline_ppl = pickle.load(f)
+except FileNotFoundError:
+    prompt_to_datapoint_with_baseline_ppl = {}
 
 USE_PPL = True
 USE_BASELINE = True
@@ -62,10 +60,8 @@ SUBTRACT_RANDOM_BASELINE = True
 RANDOM_BASELINE_WEIGHTING = 0.5
 PREDEFINED_RANDOM_CHOICES = False
 
-# Toggle for RL reward computation:
-# - Set to True to use reference-model reward via get_r_refs (kept below)
-# - Set to False to use binary accuracy from the last \boxed{...} as reward
-USE_REFERENCE_REWARD = False
+# USE_REFERENCE_REWARD is now read from rl_config.use_reference_reward (default False).
+# See LitCoLaR.__init__ for details.
 
 def _ensure_list(obj):
     if obj is None:
@@ -207,7 +203,7 @@ def calculate_reward(question_string, original_model_response, tokenizer, remote
 # VERY HACKY BUT WE WILL IDENTIFY A RANDOM OTHER DATAPOINT FOR EVERY ELEMENT IN PROMPT TO DATAPOINT
 # that way, no matter what datapoint we see during training, we always are consistent within a group
 # the downside to this is the model may learn (for this prompt, don't mention X, Y, Z)
-if PREDEFINED_RANDOM_CHOICES:
+if PREDEFINED_RANDOM_CHOICES and prompt_to_datapoint_with_baseline_ppl:
     prior_story_to_random_datapoint = {}
     prior_story_to_group_idx = {}
     for prior_story, datapoint in prompt_to_datapoint_with_baseline_ppl.items():
@@ -352,7 +348,14 @@ class LitCoLaR(LitCoTModelBase):
             self._freeze_base_llm_parameters()
 
         if model_kwargs.do_rl:
+            rl_cfg_init = model_kwargs.rl_config
+            if isinstance(rl_cfg_init, dict):
+                self.use_reference_reward = rl_cfg_init.get("use_reference_reward", False)
+            else:
+                self.use_reference_reward = getattr(rl_cfg_init, "use_reference_reward", False)
             self.init_rl()
+        else:
+            self.use_reference_reward = False
 
         # Optional chunking for memory-constrained runs.
         rl_cfg = getattr(self.model_kwargs, "rl_config", None)
@@ -370,19 +373,17 @@ class LitCoLaR(LitCoTModelBase):
             chunk = int(chunk)
             self.logprob_chunk_size = chunk if chunk > 0 else None
 
-        model_class = AutoLigerKernelForCausalLM
-        # FOR VR-CLI
-        # self.baseline_llm = model_class.from_pretrained(model_kwargs.model_id, 
-        #     attn_implementation="flash_attention_3", 
-        #     trust_remote_code=True, 
-        #     torch_dtype=torch.bfloat16, 
-        #     # device_map="auto"
-        #     device_map=None,
-        #     low_cpu_mem_usage=True,
-        # )
-        # self.baseline_llm.to(self.device)
-
-        # self.fused_ce_sum = LigerFusedLinearCrossEntropyLoss(reduction="sum")
+        if model_kwargs.do_rl and self.use_reference_reward:
+            model_class = AutoLigerKernelForCausalLM
+            self.baseline_llm = model_class.from_pretrained(model_kwargs.model_id,
+            attn_implementation="flash_attention_2",
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
+            device_map=None,
+            low_cpu_mem_usage=True,
+            )
+            self.baseline_llm.to(self.device)
+            self.fused_ce_sum = LigerFusedLinearCrossEntropyLoss(reduction="sum")
 
     def _freeze_base_llm_parameters(self):  # FROZEN-LLM-SFT: Freeze base LLM parameters
         """
@@ -1166,14 +1167,15 @@ class LitCoLaR(LitCoTModelBase):
         group_size = len(pred_answers)
 
         accuracies = torch.zeros(size=(group_size, 1), device=self.device, dtype=torch.float32) + 1
-        for i, pred_answer in enumerate(pred_answers):
-            # Boxed-based accuracy: compare last \boxed{...} against ground truth using base verifier
-            # pred_a = extract_last_boxed(pred_answer)
-            # accuracy = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
-            # pred_a = float(pred_a)
-            pred_a = parse_prediction(pred_answer)
-            gt_answer = float(gt_answer)
-            accuracies[i] = float(pred_a == gt_answer)
+        if not self.use_reference_reward:
+            for i, pred_answer in enumerate(pred_answers):
+                # Boxed-based accuracy: compare last \boxed{...} against ground truth using base verifier
+                # pred_a = extract_last_boxed(pred_answer)
+                # accuracy = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
+                # pred_a = float(pred_a)
+                pred_a = parse_prediction(pred_answer)
+                gt_answer = float(gt_answer)
+                accuracies[i] = float(pred_a == gt_answer)
 
         
             # accuracies[i] = self.verify_answer(gt_answer=gt_answer, pred_answer=pred_a)
@@ -1184,8 +1186,8 @@ class LitCoLaR(LitCoTModelBase):
         # print(f"len(question_strings): {len(question_strings)}")
         # print(f"len(pred_answers): {len(pred_answers)}")
         # x = 1/0
-        # Choose reward mode. To use reference-model reward instead, set USE_REFERENCE_REWARD = True at top.
-        if USE_REFERENCE_REWARD:
+        # Choose reward mode based on rl_config.use_reference_reward
+        if self.use_reference_reward:
             # Reference-model reward (kept for easy switching):
             # rewards = get_r_refs(question_strings, pred_answers, self.baseline_llm, self.tokenizer, len(pred_answers))
             rewards = get_r_refs(question_strings, pred_answers, self.baseline_llm, self.tokenizer, len(pred_answers))
@@ -1359,21 +1361,26 @@ class LitCoLaR(LitCoTModelBase):
                 # Compute binary accuracy from last \boxed{...} for logging
                 # pred_a = extract_last_boxed(o_str)
                 # acc = self.verify_answer(gt_answer=a, pred_answer=pred_a)
-                pred_a = parse_prediction(o_str)
-                gt_answer = float(a)
-                acc = float(pred_a == gt_answer)
-
-                if USE_REFERENCE_REWARD:
-                    # Reference reward path (switch by setting USE_REFERENCE_REWARD=True at top)
+                # pred_a = parse_prediction(o_str)
+                # gt_answer = float(a)
+                # acc = float(pred_a == gt_answer)
+                pred_a = o_str 
+                if self.use_reference_reward:
+                    # Reference reward path
                     rewards = get_r_refs(question_strings, [o_str], self.baseline_llm, self.tokenizer, len(question_strings))
                     reward = rewards[0].item()
                 else:
+                    pred_a = parse_prediction(o_str)
+                    gt_answer = float(a)
+                    acc = float(pred_a == gt_answer)
+
                     # Default: reward equals boxed-accuracy
                     reward = float(acc)
 
                 self.sample_logs[i]["reward"].append(reward)
                 self.sample_logs[i]["acc"].append(acc)
                 self.sample_logs[i]["pred_answer"].append(pred_a)
+                # self.sample_logs[i]["pred_answer"].append(o_str)
                 self.sample_logs[i]["output_string"].append(o_str)
                 self.sample_logs[i]["output_length"].append(o_length)
                 self.sample_logs[i]["n_latent_forward"].append(nlf.item())

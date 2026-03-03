@@ -142,6 +142,8 @@ def get_clones(module, N):
 
 def get_metric_statistics(values, replication_times):
     mean = np.mean(values, axis=0)
-    std = np.std(values, axis=0)
-    conf_interval = 1.96 * std / np.sqrt(replication_times)
-    return mean, conf_interval
+    std = np.std(values, axis=0, ddof=1)
+    assert len(values) == replication_times
+    sem = std / np.sqrt(len(values))
+    # conf_interval = 1.96 * std / np.sqrt(replication_times)
+    return mean, sem

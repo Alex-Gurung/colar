@@ -6,4 +6,5 @@ MODEL_EMB_STD = {
     "gpt2": 0.12,
     "Qwen/Qwen2.5-1.5B-Instruct": 0.0261,
     "Qwen/Qwen2.5-7B-Instruct": 0.0136,
+    "Qwen/Qwen3-4B-Instruct-2507": 0.0217,
 }
