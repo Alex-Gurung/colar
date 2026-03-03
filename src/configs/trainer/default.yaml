@@ -12,6 +12,9 @@ trainer:
   use_distributed_sampler: True
   strategy: auto
 
+  # Logger: TensorBoard (default) or WandB
+  # For WandB, change target to lightning.pytorch.loggers.WandbLogger
+  # and set project: your-project-name
   logger:
     target: lightning.pytorch.loggers.TensorBoardLogger
     save_dir:

@@ -52,20 +52,37 @@ def get_obj_from_str(string, reload=False):
     return getattr(importlib.import_module(module, package=None), cls)
 
 
-def instantiate_from_config(config, extra_kwargs=dict()):
+def instantiate_from_config(config, extra_kwargs=None):
     config_dict = dict(config)
     if "target" not in config_dict:
         raise ValueError(f"target not found in {config}")
 
     target_kwargs = copy.deepcopy(config_dict)
-    target_kwargs.pop("target")
+    target = target_kwargs.pop("target")
 
-    for k, v in target_kwargs.items():
-        if isinstance(v, DictConfig) and "target" in v.keys():
+    for k, v in list(target_kwargs.items()):
+        if isinstance(v, DictConfig) and "target" in v:
             target_kwargs[k] = instantiate_from_config(v)
-    target_kwargs.update(extra_kwargs)
 
-    return get_obj_from_str(config_dict["target"])(**target_kwargs)
+    cls = get_obj_from_str(target)
+
+    # Handle positional args (e.g. optimizer params for DeepSpeedCPUAdam)
+    if extra_kwargs is not None and not isinstance(extra_kwargs, dict):
+        return cls(extra_kwargs, **target_kwargs)
+
+    if extra_kwargs:
+        target_kwargs.update(extra_kwargs)
+
+    # If 'params' is in kwargs, try positional first (DeepSpeedCPUAdam),
+    # fall back to keyword (torch.optim.*)
+    if "params" in target_kwargs:
+        params = target_kwargs.pop("params")
+        try:
+            return cls(params, **target_kwargs)
+        except TypeError:
+            return cls(params=params, **target_kwargs)
+
+    return cls(**target_kwargs)
 
 
 def dict_apply(x, func):
@@ -99,6 +116,6 @@ def get_clones(module, N):
 
 def get_metric_statistics(values, replication_times):
     mean = np.mean(values, axis=0)
-    std = np.std(values, axis=0)
-    conf_interval = 1.96 * std / np.sqrt(replication_times)
-    return mean, conf_interval
+    std = np.std(values, axis=0, ddof=1)
+    sem = std / np.sqrt(len(values))
+    return mean, sem

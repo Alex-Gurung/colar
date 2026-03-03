@@ -3,16 +3,45 @@ seed: ~
 model:
   target: src.models.colar.LitCoLaR
   model_kwargs:
+    # --- Model selection ---
+    # For Llama (original): model_id: Llama-3.2-1B-Instruct
+    # For Qwen: model_id: Qwen/Qwen2.5-7B-Instruct
     model_id: Llama-3.2-1B-Instruct
-    # model_id: DeepSeek-R1-Distill-Qwen-1.5B
     sft_method: colar
+
+    # --- Model loading options ---
+    # use_workspace_path: join model_id with workspace_path (legacy). Default: use model_id directly.
+    use_workspace_path: False
+    # use_liger_kernel: use LigerKernel for fused operations (requires liger-kernel package)
+    use_liger_kernel: False
+    # attn_implementation: flash_attention_2, eager, or sdpa
+    # attn_implementation: flash_attention_2
+    # gradient_checkpointing: save memory at cost of speed
+    gradient_checkpointing: False
+
+    # --- Chat template ---
+    # Set True for Llama-instruct chat format. Qwen models typically don't need this.
     chat_template: False
 
+    # --- Thinking separator ---
+    # "###" for Llama (single token), "\n" for Qwen chat models
+    thinking_separator: "###"
+
+    # --- LoRA ---
     do_lora: True
     lora_config:
       r: 128
       lora_alpha: 32
 
+    # --- Frozen LLM SFT ---
+    # freeze_base_llm: train only latent_policy (+ new token embeddings)
+    freeze_base_llm: False
+
+    # --- Fused cross-entropy ---
+    # use_fused_ce: use LigerKernel fused linear+CE (avoids [B*T, V] logits)
+    use_fused_ce: False
+
+    # --- Latent CoT config ---
     latent_cot_config:
       ce_weight: 1
       embed_modeling_weight: 1
@@ -22,22 +51,23 @@ model:
       max_compression_factor: 5
       pred_compressed_cot: True
       sqrt_mean: True
-    
+
     latent_policy_config:
       lp_determinisitc: False
-      lp_intermediate_size: 2048
+      lp_intermediate_size: 2048  # match hidden_size for larger models
 
     latent_generation_config:
       max_n_latent_forward: 64
       latent_temperature: 1.0
       compression_factor: 5
-    
+
     answer_generation_config:
-      max_new_tokens: 16
+      max_new_tokens: 16  # increase for longer answers (e.g. 2048 for MATH)
       do_sample: True
       top_p: 0.9
       temperature: 1.0
 
+    # --- RL config ---
     do_rl: False
     rl_config:
       average_per_token_loss: False
@@ -50,13 +80,17 @@ model:
       clip_eps: 0.2
       use_latent_loss: True
       use_answer_loss: True
-      n_train_samples_per_epoch: 512  # better divisible to total_batch_size
+      n_train_samples_per_epoch: 512  # should be divisible by total_batch_size
+      # logprob_chunk_size: 32  # uncomment to enable chunked logprob computation
 
   training_kwargs:
     optimizer:
       target: torch.optim.AdamW
-      lr: 1e-4  # set to 1e-6 for rl
+      lr: 1e-4  # SFT default; use ~1e-6 for RL
       weight_decay: 0.01
+    # --- Scheduler ---
+    # Set use_scheduler: True and pick a target:
+    #   constant_schedule_with_warmup, cosine_schedule_with_warmup, cosine_with_min_lr
     use_scheduler: False
     scheduler:
       target: constant_schedule_with_warmup

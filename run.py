@@ -128,13 +128,15 @@ def _preprocess_config(config, args, unknown_args):
         config.trainer.logger = False
     else:
         config.trainer.logger.save_dir = f"logs/{args.model}"
-        config.trainer.logger.name = f"{args.dataset}-{config.data_module.dataset_name}"
-        config.trainer.logger.version = (
-            start_time
-            + "_"
-            + str(random.randint(100000, 999999))
-            + (f"_{args.log_suffix}" if args.log_suffix != "" else "")
-        )
+        config.trainer.logger.name = f"colar-{args.dataset}-{args.log_suffix}"
+        # version: only set if the logger supports it (TensorBoard yes, WandB no)
+        if hasattr(config.trainer.logger, 'version'):
+            config.trainer.logger.version = (
+                start_time
+                + "_"
+                + str(random.randint(100000, 999999))
+                + (f"_{args.log_suffix}" if args.log_suffix != "" else "")
+            )
 
     # batch size for ddp
     total_bs = config.dataloader.batch_size
