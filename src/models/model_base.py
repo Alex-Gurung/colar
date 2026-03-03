@@ -3,14 +3,26 @@ from collections import defaultdict, OrderedDict
 from os.path import join as opj
 from typing import List
 import torch
+import torch.distributed as dist
 import lightning.pytorch as pl
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
-from transformers.optimization import get_cosine_schedule_with_warmup, get_constant_schedule_with_warmup
-from transformers.models.llama import LlamaForCausalLM
+from transformers.optimization import (
+    get_cosine_schedule_with_warmup,
+    get_constant_schedule_with_warmup,
+    get_cosine_with_min_lr_schedule_with_warmup,
+)
 from peft import LoraConfig, get_peft_model
 
 from ..utils.utils import instantiate_from_config, get_timestamp, get_position_ids_from_attention_mask
 from ..utils.log import JsonLogger, TextLogger
+
+# Optional: LigerKernel for fused operations (memory-efficient).
+# Falls back to standard HuggingFace if not installed.
+try:
+    from liger_kernel.transformers import AutoLigerKernelForCausalLM
+    _HAS_LIGER = True
+except ImportError:
+    _HAS_LIGER = False
 
 
 class LitCoTModelBase(pl.LightningModule):
@@ -27,12 +39,18 @@ class LitCoTModelBase(pl.LightningModule):
         self.model_kwargs = model_kwargs
         self.save_hyperparameters()
 
-        llm_path = opj(all_config.args.workspace_path, "models", "llms", model_kwargs.model_id)
-        ### IMPORTANT: replace the llm path to YOUR OWN llm path ###
+        # Resolve LLM path: use model_id directly (HuggingFace ID or local path),
+        # or join with workspace_path if use_workspace_path is set.
+        if model_kwargs.get("use_workspace_path", False):
+            llm_path = opj(all_config.args.workspace_path, "models", "llms", model_kwargs.model_id)
+        else:
+            llm_path = model_kwargs.model_id
 
         # tokenizer
-        self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(llm_path)
-        if model_kwargs.get("set_pad_as_last_token", False):  # we don't use this, but might help
+        self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(
+            llm_path, trust_remote_code=True
+        )
+        if model_kwargs.get("set_pad_as_last_token", False):
             self.tokenizer.pad_token = "[PAD]"
             self.tokenizer.pad_token_id = len(self.tokenizer) - 1
         else:
@@ -57,21 +75,43 @@ Question: {} Let's think step by step:
         else:
             self.question_template = "Question: {} Let's think step by step:"
         self.speed_template = "(Thinking speed: {})"
-        self.thinking_separator = "###"
-        self.thinking_separator_id = self.tokenizer.convert_tokens_to_ids(self.thinking_separator)
+
+        # Thinking separator: configurable via model_kwargs.thinking_separator
+        # Default "###" works for Llama; "\n" is better for Qwen chat models.
+        sep = model_kwargs.get("thinking_separator", "###")
+        self.thinking_separator = sep
+        # For multi-char separators that aren't single tokens, use encode instead
+        sep_ids = self.tokenizer.convert_tokens_to_ids(sep)
+        if isinstance(sep_ids, int) and sep_ids != self.tokenizer.unk_token_id:
+            self.thinking_separator_id = sep_ids
+        else:
+            self.thinking_separator_id = self.tokenizer.encode(sep, add_special_tokens=False)[0]
+
         self.steps_template = "{}"
         self.answer_template = "Answer:{}"
 
-        # llm
-        self.llm: LlamaForCausalLM = AutoModelForCausalLM.from_pretrained(llm_path)
-        if not model_kwargs.get("set_pad_as_last_token", False):  # not used, but might help
+        # LLM: use LigerKernel if available and enabled, otherwise standard HF
+        use_liger = model_kwargs.get("use_liger_kernel", False) and _HAS_LIGER
+        attn_impl = model_kwargs.get("attn_implementation", None)
+        model_class = AutoLigerKernelForCausalLM if use_liger else AutoModelForCausalLM
+
+        load_kwargs = {"trust_remote_code": True, "torch_dtype": torch.bfloat16}
+        if attn_impl:
+            load_kwargs["attn_implementation"] = attn_impl
+
+        self.llm = model_class.from_pretrained(llm_path, **load_kwargs)
+        if not model_kwargs.get("set_pad_as_last_token", False):
             self.llm.resize_token_embeddings(len(self.tokenizer))
         self.llm.generation_config.pad_token_id = self.tokenizer.pad_token_id
         self.llm.generation_config.eos_token_id = self.tokenizer.eos_token_id
         self.embedding = self.llm.get_input_embeddings()
 
+        # Gradient checkpointing (saves memory at cost of speed)
+        if model_kwargs.get("gradient_checkpointing", False):
+            self.llm.gradient_checkpointing_enable()
+
         # lora (applied after all the configurations readied)
-        if model_kwargs.do_lora:
+        if model_kwargs.get("do_lora", False):
             self.llm = get_peft_model(self.llm, peft_config=LoraConfig(**model_kwargs.lora_config))
             self.llm.print_trainable_parameters()
 
@@ -101,6 +141,16 @@ Question: {} Let's think step by step:
                 num_warmup_steps=scheduler_config.warmup_steps,
                 num_training_steps=scheduler_config.num_training_steps,
             )
+        elif scheduler_config.target == "cosine_with_min_lr":
+            lr_kwargs = dict(scheduler_config.get("lr_scheduler_kwargs", {}))
+            scheduler = get_cosine_with_min_lr_schedule_with_warmup(
+                optimizer,
+                num_warmup_steps=scheduler_config.warmup_steps,
+                num_training_steps=scheduler_config.get(
+                    "num_training_steps", self.trainer.estimated_stepping_batches
+                ),
+                **lr_kwargs,
+            )
         else:
             scheduler = get_constant_schedule_with_warmup(optimizer, num_warmup_steps=scheduler_config.warmup_steps)
 
@@ -123,7 +173,7 @@ Question: {} Let's think step by step:
         log_dict = self.forward(batch=batch)
         log_dict = {f"{split}/{k}": v for k, v in log_dict.items()}
         return log_dict
-    
+
     def forward(self, *args, **kwargs):
         raise NotImplementedError()
 
@@ -131,8 +181,27 @@ Question: {} Let's think step by step:
         return {}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
-        # Evaluate the generation of the model on the validation data
-        log_dict = self.eval_generation(batch=batch, split="val", batch_idx=batch_idx, dataloader_idx=dataloader_idx)
+        log_dict = {}
+
+        # Compute validation loss if the model has a forward pass
+        with torch.no_grad():
+            loss_output = self.forward(batch=batch)
+            val_loss = loss_output.get("total_loss", 0.0)
+            log_dict["val/loss"] = val_loss
+            for k, v in loss_output.items():
+                if k != "total_loss":
+                    log_dict[f"val/{k}"] = v
+
+        # Generation-based evaluation
+        generation_dict = self.eval_generation(
+            batch=batch, split="val", batch_idx=batch_idx, dataloader_idx=dataloader_idx
+        )
+        log_dict.update(generation_dict)
+
+        # Ensure a stable monitor key exists
+        if "monitor" not in log_dict and "val/acc" in log_dict:
+            log_dict["monitor"] = log_dict["val/acc"]
+
         self.log_dict(
             log_dict,
             sync_dist=True,
@@ -144,8 +213,41 @@ Question: {} Let's think step by step:
         return log_dict
 
     def on_validation_epoch_end(self):
-        self.json_logger.log(self.sample_logs)
+        merged_logs = self._gather_sample_logs(self.sample_logs)
+        if merged_logs is not None:
+            self.json_logger.log(merged_logs)
         return super().on_validation_epoch_end()
+
+    def _gather_sample_logs(self, local_logs):
+        """Gather sample logs from all DDP ranks and merge on rank 0."""
+        if not (dist.is_available() and dist.is_initialized()):
+            return local_logs
+
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
+
+        gathered = [None for _ in range(world_size)]
+        dist.all_gather_object(gathered, local_logs)
+
+        if rank != 0:
+            return None
+
+        merged = {}
+        for shard in gathered:
+            if not shard:
+                continue
+            for key, value in shard.items():
+                if key not in merged:
+                    merged[key] = value
+                else:
+                    for subkey, subval in value.items():
+                        if subkey not in merged[key]:
+                            merged[key][subkey] = subval
+                        elif isinstance(subval, list):
+                            merged[key][subkey].extend(subval)
+                        else:
+                            merged[key][subkey] = subval
+        return merged
 
     def on_save_checkpoint(self, checkpoint):
         # only save the trainable parameters
@@ -172,7 +274,9 @@ Question: {} Let's think step by step:
         )
 
     def on_test_end(self):
-        self.json_logger.log(self.sample_logs)
+        merged_logs = self._gather_sample_logs(self.sample_logs)
+        if merged_logs is not None:
+            self.json_logger.log(merged_logs)
         return super().on_test_end()
 
     # -- basic methods implemenration ends --#
@@ -319,8 +423,6 @@ Question: {} Let's think step by step:
             is_done = is_done | is_eol
             if is_done.all():
                 break
-
-        # all_latent_hidden_states = torch.cat(all_latent_hidden_states, dim=2)
 
         # 3: add end of thinking
         end_of_thinking_ids = (
