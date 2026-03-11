@@ -97,8 +97,8 @@ def main():
 
     total = 0
     for split in ["train", "val", "test"]:
-        in_file = in_dir / f"{split}_colar_format.jsonl"
-        out_file = out_dir / f"{split}_colar_format.jsonl"
+        in_file = in_dir / f"{split}.jsonl"
+        out_file = out_dir / f"{split}.jsonl"
         n = process_split(tokenizer, in_file, out_file, inplace=args.inplace, add_system=args.add_system)
         if n > 0:
             print(f"Converted {n} examples in {split}.jsonl")

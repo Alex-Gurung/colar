@@ -336,9 +336,13 @@ class LitCoLaR(LitCoTModelBase):
         super().__init__(model_kwargs=model_kwargs, training_kwargs=training_kwargs, all_config=all_config)
 
         latent_policy_config = model_kwargs.latent_policy_config
+        # Gemma 3's config nests hidden_size under text_config; fall back to it.
+        _cfg = self.llm.config
+        _hidden_size = getattr(_cfg, "hidden_size", None) or _cfg.text_config.hidden_size
+
         self.latent_policy = LatentPolicy(
-            feature_size=self.llm.config.hidden_size,
-            intermediate_size=latent_policy_config.get("lp_intermediate_size", self.llm.config.hidden_size),
+            feature_size=_hidden_size,
+            intermediate_size=latent_policy_config.get("lp_intermediate_size", _hidden_size),
             deterministic=latent_policy_config.get("lp_determinisitc", False),
         )
         self.embeds_std = MODEL_EMB_STD[model_kwargs.model_id]
@@ -356,6 +360,9 @@ class LitCoLaR(LitCoTModelBase):
             self.init_rl()
         else:
             self.use_reference_reward = False
+
+        self._rl_debug_optimizer_step = 0
+        self._rl_debug_sentinels = None
 
         # Optional chunking for memory-constrained runs.
         rl_cfg = getattr(self.model_kwargs, "rl_config", None)
@@ -1002,6 +1009,134 @@ class LitCoLaR(LitCoTModelBase):
         self.replay_buffer = grpo.ReplayBuffer()
         self.automatic_optimization = False
 
+    def _get_rl_debug_cfg(self, key, default):
+        rl_cfg = getattr(self.model_kwargs, "rl_config", None)
+        if rl_cfg is None:
+            return default
+        if isinstance(rl_cfg, dict):
+            return rl_cfg.get(key, default)
+        return getattr(rl_cfg, key, default)
+
+    def _should_log_rl_param_deltas(self):
+        return bool(self._get_rl_debug_cfg("debug_param_deltas", False))
+
+    def _max_rl_debug_steps(self):
+        return int(self._get_rl_debug_cfg("debug_param_delta_steps", 8))
+
+    def _step_rl_lr_scheduler(self):
+        schedulers = self.lr_schedulers()
+        if schedulers is None:
+            return
+        if not isinstance(schedulers, list):
+            schedulers = [schedulers]
+        for scheduler in schedulers:
+            self.lr_scheduler_step(scheduler, metric=None)
+
+    def _init_rl_debug_sentinels(self, optimizer):
+        if self._rl_debug_sentinels is not None:
+            return
+
+        sentinels = []
+        if getattr(self.trainer, "is_global_zero", True):
+            wrapped = getattr(optimizer, "optimizer", None)
+            print(
+                f"[RL-DEBUG] optimizer_type={type(optimizer).__name__} "
+                f"wrapped_optimizer_type={type(wrapped).__name__ if wrapped is not None else None}"
+            )
+        for prefix, label in (("llm.", "llm"), ("latent_policy.", "latent_policy")):
+            for name, param in self.named_parameters():
+                if not name.startswith(prefix):
+                    continue
+                if not param.requires_grad:
+                    continue
+                if param.ndim < 1:
+                    continue
+                in_optimizer = any(
+                    param is opt_param
+                    for group in optimizer.param_groups
+                    for opt_param in group["params"]
+                )
+                sentinels.append({
+                    "label": label,
+                    "name": name,
+                    "param": param,
+                    "in_optimizer": in_optimizer,
+                })
+                break
+
+        self._rl_debug_sentinels = sentinels
+        if getattr(self.trainer, "is_global_zero", True):
+            for sentinel in sentinels:
+                p = sentinel["param"]
+                print(
+                    f"[RL-DEBUG] sentinel={sentinel['label']} "
+                    f"name={sentinel['name']} dtype={p.dtype} "
+                    f"shape={tuple(p.shape)} in_optimizer={sentinel['in_optimizer']}"
+                )
+
+    def _capture_rl_debug_snapshot(self, optimizer):
+        self._init_rl_debug_sentinels(optimizer)
+        snapshot = []
+        for sentinel in self._rl_debug_sentinels:
+            param = sentinel["param"]
+            before = param.detach().flatten()[:32].float().cpu().clone()
+            grad = param.grad.detach().flatten()[:32].float().cpu().clone() if param.grad is not None else None
+            opt_state = optimizer.state.get(param, {})
+            state_step = opt_state.get("step")
+            if torch.is_tensor(state_step):
+                state_step = float(state_step.detach().cpu().item())
+            exp_avg_mean = None
+            exp_avg_sq_mean = None
+            if "exp_avg" in opt_state:
+                exp_avg_mean = float(opt_state["exp_avg"].detach().float().abs().mean().item())
+            if "exp_avg_sq" in opt_state:
+                exp_avg_sq_mean = float(opt_state["exp_avg_sq"].detach().float().abs().mean().item())
+            snapshot.append({
+                **sentinel,
+                "before": before,
+                "grad": grad,
+                "state_step_before": state_step,
+                "exp_avg_mean_before": exp_avg_mean,
+                "exp_avg_sq_mean_before": exp_avg_sq_mean,
+            })
+        return snapshot
+
+    def _log_rl_debug_snapshot(self, optimizer, snapshot):
+        self._rl_debug_optimizer_step += 1
+        if not getattr(self.trainer, "is_global_zero", True):
+            return
+
+        for item in snapshot:
+            param = item["param"]
+            after = param.detach().flatten()[:32].float().cpu()
+            delta = after - item["before"]
+            grad = item["grad"]
+            opt_state = optimizer.state.get(param, {})
+            state_step = opt_state.get("step")
+            if torch.is_tensor(state_step):
+                state_step = float(state_step.detach().cpu().item())
+            exp_avg_mean = None
+            exp_avg_sq_mean = None
+            if "exp_avg" in opt_state:
+                exp_avg_mean = float(opt_state["exp_avg"].detach().float().abs().mean().item())
+            if "exp_avg_sq" in opt_state:
+                exp_avg_sq_mean = float(opt_state["exp_avg_sq"].detach().float().abs().mean().item())
+
+            grad_abs_max = None if grad is None else float(grad.abs().max().item())
+            grad_abs_mean = None if grad is None else float(grad.abs().mean().item())
+            changed = bool(delta.abs().max().item() != 0.0)
+            print(
+                f"[RL-DEBUG] opt_step={self._rl_debug_optimizer_step} "
+                f"label={item['label']} name={item['name']} dtype={param.dtype} "
+                f"grad_abs_max={grad_abs_max} grad_abs_mean={grad_abs_mean} "
+                f"delta_abs_max={float(delta.abs().max().item())} "
+                f"delta_abs_mean={float(delta.abs().mean().item())} "
+                f"changed={changed} "
+                f"state_step_before={item['state_step_before']} state_step_after={state_step} "
+                f"exp_avg_mean_before={item['exp_avg_mean_before']} exp_avg_mean_after={exp_avg_mean} "
+                f"exp_avg_sq_mean_before={item['exp_avg_sq_mean_before']} exp_avg_sq_mean_after={exp_avg_sq_mean}"
+            )
+
     @torch.no_grad()
     def filter_train_indices(self, dataloader_to_filter_indices):
         """
@@ -1035,7 +1170,11 @@ class LitCoLaR(LitCoTModelBase):
         elif isinstance(answers, str):
             answers = [answers] * len(questions)
         self.replay_buffer.clear()
-        optimizer = self.optimizers()
+        use_raw_optimizer = bool(self._get_rl_debug_cfg("use_raw_optimizer", False))
+        try:
+            optimizer = self.optimizers(use_pl_optimizer=not use_raw_optimizer)
+        except TypeError:
+            optimizer = self.optimizers()
 
         experience = self.rollout(questions=questions, gt_answers=answers)
         self.replay_buffer.append(experience.to("cpu"))
@@ -1066,11 +1205,24 @@ class LitCoLaR(LitCoTModelBase):
             optimizer.zero_grad()
             self.manual_backward(loss_dict["total_loss"])
             grad_norm = clip_grad_norm_(self.parameters(), max_norm=1.0)
+            debug_snapshot = None
+            if (
+                self._should_log_rl_param_deltas()
+                and self._rl_debug_optimizer_step < self._max_rl_debug_steps()
+            ):
+                debug_snapshot = self._capture_rl_debug_snapshot(optimizer)
             optimizer.step()
+            self._step_rl_lr_scheduler()
+            if debug_snapshot is not None:
+                self._log_rl_debug_snapshot(optimizer, debug_snapshot)
 
             log_dict = {f"train/{k}": v for k, v in loss_dict.items()}
             log_dict["train/grad_norm"] = grad_norm
+            raw_optimizer = getattr(optimizer, "optimizer", optimizer)
+            current_lr = raw_optimizer.param_groups[0]["lr"]
+            log_dict["train/learning_rate"] = current_lr
             self.log_dict(log_dict)
+            self.log("train/lr", current_lr, on_step=True, on_epoch=False, logger=True, prog_bar=False)
 
     @torch.no_grad()
     def rollout(self, questions: List[str], gt_answers) -> grpo.Experience:
@@ -1296,7 +1448,7 @@ class LitCoLaR(LitCoTModelBase):
         return latent_logprobs, answer_logprobs
 
     def eval_generation(self, batch, split="val", batch_idx=None, dataloader_idx=0):
-        indices = [int(x) for x in _ensure_list(batch.get("idx"))]
+        indices = _ensure_list(batch.get("idx"))
         questions = _ensure_list(batch.get("question"))
         answers = _ensure_list(batch.get("answer"))
         raw_steps = batch.get("steps", None)
@@ -1388,9 +1540,8 @@ class LitCoLaR(LitCoTModelBase):
                 # Non-RL eval: compute accuracy from the last \boxed{...}
                 # pred_a = extract_last_boxed(o_str)
                 # acc = self.verify_answer(gt_answer=a, pred_answer=pred_a)
-                pred_a = parse_prediction(o_str)
-                gt_answer = float(a)
-                acc = float(pred_a == gt_answer)
+                pred_a = extract_last_boxed(o_str)
+                acc = self.verify_answer(gt_answer=a, pred_answer=pred_a)
                 self.sample_logs[i]["pred_answer"].append(pred_a)
                 self.sample_logs[i]["output_string"].append(o_str)
                 self.sample_logs[i]["output_length"].append(o_length)

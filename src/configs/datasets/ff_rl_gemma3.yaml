@@ -1,0 +1,6 @@
+data_module:
+  target: src.datasets.rl_data.ConvertedRLDataModule
+  dataset_name: ff_rl_gemma3
+  tiny_dataset: False
+  epoch_scaling: 1
+  dataset_dir: /mnt/disk/baseline_colar/ff_rl_gemma3

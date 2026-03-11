@@ -1,0 +1,87 @@
+seed: ~
+
+model:
+  target: src.models.colar.LitCoLaR
+  model_kwargs:
+    model_id: google/gemma-3-4b-it
+    sft_method: colar
+    chat_template: True
+    do_lora: False
+
+    latent_cot_config:
+      ce_weight: 1
+      embed_modeling_weight: 1
+      embed_modeling_loss: mse
+      entropy_weight: 0
+      pred_embed_forward_weight: 0
+      max_compression_factor: 3      # Gemma traces ~12 steps avg
+      pred_compressed_cot: True
+      sqrt_mean: True
+
+    latent_policy_config:
+      lp_determinisitc: False
+      lp_intermediate_size: 2560     # Gemma 3 4B text hidden_size
+
+    latent_generation_config:
+      max_n_latent_forward: 64
+      latent_temperature: 1.0
+      compression_factor: 3
+
+    answer_generation_config:
+      max_new_tokens: 2048
+      do_sample: True
+      top_p: 0.9
+      temperature: 1.0
+
+    do_rl: True
+    rl_config:
+      use_reference_reward: False    # binary accuracy mode
+      average_per_token_loss: False
+      random_speed_in_group: False
+      filter_dataset: False
+      punish_latent_length: False
+      clip_grad_norm: 1.0
+      clip_eps: 0.2
+      use_latent_loss: True
+      use_answer_loss: True
+      group_size: 16                 # samples per prompt
+      exp_batch_size: 2              # inner training batch
+      n_train_samples_per_epoch: 290 # full train set
+
+  training_kwargs:
+    optimizer:
+      target: torch.optim.AdamW
+      lr: 5e-7
+      weight_decay: 0.01
+    use_scheduler: True
+    scheduler:
+      target: cosine_with_min_lr
+      warmup_steps: 870             # ~10% of 30*290
+      lr_scheduler_kwargs:
+        min_lr_rate: 0.1
+
+trainer:
+  precision: bf16
+  max_epochs: 30
+  accumulate_grad_batches: 1        # required for RL (manual backward)
+  strategy: ddp
+  enable_model_summary: false
+  val_check_interval: 16
+
+dataloader:
+  batch_size: 16                    # 4/GPU with 4 GPUs
+  val_batch_size: 16
+  num_workers: 4
+  pin_memory: True
+  persistent_workers: True
+  drop_last: True
+
+callbacks:
+  - target: lightning.pytorch.callbacks.ModelCheckpoint
+    monitor: val/reward
+    mode: max
+    save_top_k: 0
+    save_last: True
+  - target: src.callbacks.HFCheckpoint
+    monitor: val/reward
+    mode: max

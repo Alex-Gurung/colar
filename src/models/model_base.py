@@ -1,3 +1,4 @@
+import re
 import numpy as np
 from collections import defaultdict, OrderedDict
 from os.path import join as opj
@@ -6,7 +7,7 @@ import torch
 import torch.distributed as dist
 import lightning.pytorch as pl
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
-from transformers.optimization import get_cosine_schedule_with_warmup, get_constant_schedule_with_warmup
+from transformers.optimization import get_scheduler
 from transformers.models.llama import LlamaForCausalLM
 from peft import LoraConfig, get_peft_model
 
@@ -15,7 +16,37 @@ from ..utils.log import JsonLogger, TextLogger
 
 from liger_kernel.transformers import AutoLigerKernelForCausalLM, apply_liger_kernel_to_qwen2
 from torch.nn.utils.rnn import pad_sequence
+
+_BOXED_RE = re.compile(r"\\boxed\{([^}]*)\}")
 from deepspeed.ops.adam import DeepSpeedCPUAdam
+
+_SCHEDULER_TARGET_ALIASES = {
+    "constant_schedule_with_warmup": "constant_with_warmup",
+    "cosine_schedule_with_warmup": "cosine",
+}
+
+
+def _build_lr_scheduler(optimizer, training_kwargs, scheduler_config, model_kwargs=None, trainer_config=None):
+    scheduler_name = _SCHEDULER_TARGET_ALIASES.get(scheduler_config.target, scheduler_config.target)
+    scheduler_kwargs = scheduler_config.get("lr_scheduler_kwargs")
+    if scheduler_kwargs is not None:
+        scheduler_kwargs = dict(scheduler_kwargs)
+
+    num_training_steps = scheduler_config.get("num_training_steps", training_kwargs.get("num_training_steps"))
+    if num_training_steps is None:
+        rl_config = None if model_kwargs is None else model_kwargs.get("rl_config")
+        if rl_config is not None:
+            num_training_steps = rl_config.get("n_train_samples_per_epoch")
+            if num_training_steps is not None and trainer_config is not None:
+                num_training_steps = int(num_training_steps) * int(trainer_config.max_epochs)
+    return get_scheduler(
+        name=scheduler_name,
+        optimizer=optimizer,
+        num_warmup_steps=scheduler_config.get("warmup_steps"),
+        num_training_steps=num_training_steps,
+        scheduler_specific_kwargs=scheduler_kwargs,
+    )
+
 
 class LitCoTModelBase(pl.LightningModule):
     def __init__(
@@ -83,10 +114,10 @@ Question: {} Let's think step by step:
         # )
 
         # model_class = AutoModelForCausalLM
-        self.llm = model_class.from_pretrained(llm_path, 
-            # attn_implementation="flash_attention_3",
-            attn_implementation="flash_attention_2",
-            trust_remote_code=True, 
+        _attn_impl = model_kwargs.get("attn_implementation", "flash_attention_2")
+        self.llm = model_class.from_pretrained(llm_path,
+            attn_implementation=_attn_impl,
+            trust_remote_code=True,
             torch_dtype=torch.bfloat16)
 
         if not model_kwargs.get("set_pad_as_last_token", False):  # not used, but might help
@@ -124,15 +155,13 @@ Question: {} Let's think step by step:
         else:
             scheduler_config = kwargs.scheduler
 
-        if scheduler_config.target == "cosine_schedule_with_warmup":
-            scheduler = get_cosine_schedule_with_warmup(
-                optimizer,
-                num_warmup_steps=scheduler_config.warmup_steps,
-                num_training_steps=scheduler_config.num_training_steps,
-            )
-        else:
-            scheduler = get_constant_schedule_with_warmup(optimizer, num_warmup_steps=scheduler_config.warmup_steps)
-
+        scheduler = _build_lr_scheduler(
+            optimizer=optimizer,
+            training_kwargs=kwargs,
+            scheduler_config=scheduler_config,
+            model_kwargs=self.model_kwargs,
+            trainer_config=self.all_config.trainer,
+        )
         self.lr_scheduler = scheduler
         return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "step"}}
 
@@ -313,7 +342,7 @@ Question: {} Let's think step by step:
         #     print("--------------------"*10)
         #     print("--------------------"*10)
         # x = 1/0
-        inputs = self.tokenizer.batch_encode_plus(
+        inputs = self.tokenizer(
             text_list, return_tensors="pt", add_special_tokens=False, padding="longest", padding_side=padding_side
         )
         input_ids = inputs["input_ids"].to(self.device)
@@ -714,23 +743,34 @@ Question: {} Let's think step by step:
         )
         return pred_ids, torch.ones(size=(batch_size, 1), device=self.device, dtype=torch.long) * max_n_latent_forward
 
+    @staticmethod
+    def _extract_boxed(text: str) -> str:
+        """Extract content from the last \\boxed{...}, falling back to raw text."""
+        matches = list(_BOXED_RE.finditer(text or ""))
+        if matches:
+            return matches[-1].group(1).strip()
+        return text.strip()
+
     def extract_answer_from_output(self, output_string: str):
-        try:
-            return output_string.strip('#').split(self.answer_template.format(""))[-1]
-        except (ValueError, IndexError):
-            return output_string
+        # Try \boxed{} first
+        boxed = list(_BOXED_RE.finditer(output_string or ""))
+        if boxed:
+            return boxed[-1].group(1).strip()
+        # Fall back to Answer: template
+        delimiter = self.answer_template.format("")
+        if delimiter in output_string:
+            return output_string.split(delimiter)[-1].strip()
+        return output_string.strip()
 
     def verify_answer(self, gt_answer: str, pred_answer: str) -> float:
-        def get_pure_string(s: str):
-            return s.strip("#\n ").rstrip(".").replace(",", "").lower()
-        gt_answer = get_pure_string(gt_answer)
-        pred_answer = get_pure_string(pred_answer)
-        try:  # some answers may be like '10.0' but predicted as '10'
-            gt_answer = float(gt_answer)
-            pred_answer = float(pred_answer)
+        gt = self._extract_boxed(gt_answer).lower()
+        pred = self._extract_boxed(pred_answer).lower()
+        try:
+            gt = float(gt)
+            pred = float(pred)
         except ValueError:
             pass
-        return float(gt_answer == pred_answer)
+        return float(gt == pred)
 
     def eval_generation(self, batch, split="val", batch_idx=None, dataloader_idx=0):
         def _ensure_list(obj):
@@ -749,7 +789,7 @@ Question: {} Let's think step by step:
             except Exception:
                 return [obj]
 
-        indices = [int(x) for x in _ensure_list(batch.get("idx"))]
+        indices = _ensure_list(batch.get("idx"))
         questions = _ensure_list(batch.get("question"))
         answers = _ensure_list(batch.get("answer"))
         steps = _ensure_list(batch.get("steps"))

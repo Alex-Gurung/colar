@@ -47,6 +47,10 @@ def do_test(model: pl.LightningModule, trainer: pl.Trainer, ckpt_path: str, data
     #         logger.info(f"Missing (sample): {miss}")
     #     if unexp:
     #         logger.info(f"Unexpected (sample): {unexp}")
+    if ckpt_path in ("best", "last"):
+        cb = trainer.checkpoint_callback
+        ckpt_path = cb.best_model_path if ckpt_path == "best" else cb.last_model_path
+        logger.info(f"Resolved checkpoint path: {ckpt_path}")
     logger.info(load_weights_memory_safe(model, ckpt_path, cast_bf16=True))
 
     for i in range(args.test_times):

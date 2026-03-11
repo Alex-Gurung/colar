@@ -1,0 +1,6 @@
+data_module:
+  target: src.datasets.converted_sft.ConvertedSFTDataModule
+  dataset_name: ff_sft_qwen3
+  tiny_dataset: False
+  epoch_scaling: 1
+  dataset_dir: /mnt/disk/baseline_colar/ff_sft_qwen3
